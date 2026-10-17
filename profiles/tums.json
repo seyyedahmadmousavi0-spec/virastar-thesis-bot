@@ -1,0 +1,268 @@
+{
+  "profile_id": "tums",
+  "university": "دانشگاه علوم پزشکی تهران",
+  "title": "دستورالعمل نگارش پایان‌نامه مقاطع تحصیلات تکمیلی دانشگاه علوم پزشکی تهران",
+  "source": "بخشنامه و شیوه نامه مصوب معاونت آموزشی دانشگاه علوم پزشکی تهران (فایل ۴۹ صفحه‌ای)",
+  "page": {
+    "width_cm": 21.0,
+    "height_cm": 29.7,
+    "size_tolerance_cm": 0.2,
+    "margins_odd_cm": {
+      "top": 2.5,
+      "bottom": 2.5,
+      "right": 3.5,
+      "left": 2.5
+    },
+    "margins_even_cm": {
+      "top": 2.5,
+      "bottom": 2.5,
+      "right": 2.5,
+      "left": 3.5
+    },
+    "margins_chapter_title_cm": {
+      "top": 10.0,
+      "bottom": 10.0,
+      "right": 3.5,
+      "left": 2.5
+    },
+    "margins_cm": {
+      "top": 2.5,
+      "bottom": 2.5,
+      "right": 3.5,
+      "left": 2.5
+    },
+    "margin_tolerance_cm": 0.3
+  },
+  "body": {
+    "fa_fonts": [
+      "B Nazanin",
+      "BNazanin",
+      "Nazanin"
+    ],
+    "fa_size_pt": 14,
+    "en_fonts": [
+      "Times New Roman"
+    ],
+    "en_size_pt": 12,
+    "line_spacing": 1.15,
+    "max_line_spacing": 1.5,
+    "line_spacing_tolerance": 0.25,
+    "alignment": "justify",
+    "first_line_indent_cm": 1.0,
+    "min_chars_to_count_as_body": 35
+  },
+  "headings": {
+    "main_heading_fa": {
+      "font": "B Titr",
+      "size_pt": 16,
+      "bold": true
+    },
+    "main_heading_en": {
+      "font": "Times New Roman",
+      "size_pt": 14,
+      "bold": true
+    },
+    "subheading_fa": {
+      "font": "B Titr",
+      "size_pt": 14,
+      "bold": true
+    },
+    "sub_subheading_fa": {
+      "font": "B Titr",
+      "size_pt": 12,
+      "bold": true
+    },
+    "caption": {
+      "font": "B Nazanin",
+      "size_pt": 12,
+      "bold": true,
+      "table_position": "above",
+      "figure_position": "below"
+    },
+    "footnote": {
+      "size_pt": 10
+    }
+  },
+  "limits": {
+    "abstract_words": [
+      150,
+      350
+    ],
+    "keywords_count": [
+      3,
+      7
+    ],
+    "max_paragraph_words": 280,
+    "max_sentence_words": 50,
+    "min_chapters_thesis": 5,
+    "max_intro_literature_share": 0.30
+  },
+  "checklist_items": [
+    {
+      "id": "cover",
+      "name": "جلد پایان‌نامه (عطف، آرم، عناوین زرکوب)",
+      "patterns": ["پایان‌نامه", "دانشگاه علوم پزشکی تهران", "رساله", "پایان نامه"],
+      "required": true
+    },
+    {
+      "id": "white_page_1",
+      "name": "صفحه سفید آغازین",
+      "patterns": [],
+      "required": true,
+      "manual_check": true
+    },
+    {
+      "id": "besmellah",
+      "name": "صفحه بسم‌الله الرحمن الرحیم",
+      "patterns": ["بسم الله الرحمن الرحیم", "بسمه تعالی", "به نام خدا"],
+      "required": true
+    },
+    {
+      "id": "title_fa",
+      "name": "صفحه عنوان فارسی (مشابه طرح روی جلد)",
+      "patterns": ["معاونت آموزشی", "دانشکده", "عنوان پایان‌نامه", "عنوان پایان نامه", "استاد راهنما", "نگارش:"],
+      "required": true
+    },
+    {
+      "id": "student_declaration",
+      "name": "اظهارنامه دانشجو (پیوست ۵ شیوه نامه)",
+      "patterns": ["اظهارنامه دانشجو", "اینجانب", "صحت و اصالت", "تعهدنامه"],
+      "required": true
+    },
+    {
+      "id": "copyright",
+      "name": "حق چاپ و تکثیر و مالکیت نتایج (پیوست ۶ شیوه نامه)",
+      "patterns": ["حق چاپ و تکثیر", "مالکیت نتایج", "مالکیت معنوی", "حق چاپ"],
+      "required": true
+    },
+    {
+      "id": "dedication",
+      "name": "صفحه تقدیم و سپاسگزاری (در یک صفحه)",
+      "patterns": ["تقدیم", "سپاسگزاری", "تقدیر و تشکر", "تشکر و قدردانی"],
+      "required": false
+    },
+    {
+      "id": "abstract_fa",
+      "name": "چکیده فارسی و واژه‌های کلیدی",
+      "patterns": ["چکیده", "چکیده فارسی"],
+      "required": true
+    },
+    {
+      "id": "abbreviations",
+      "name": "فهرست علائم و اختصارات (Abbreviations)",
+      "patterns": ["علائم و اختصارات", "فهرست اختصارات", "مخفف‌ها", "اختصارات"],
+      "required": false
+    },
+    {
+      "id": "toc",
+      "name": "فهرست مطالب",
+      "patterns": ["فهرست مطالب"],
+      "required": true
+    },
+    {
+      "id": "tables_list",
+      "name": "فهرست جدول‌ها",
+      "patterns": ["فهرست جدول", "فهرست جدول‌ها", "فهرست جداول"],
+      "required": false
+    },
+    {
+      "id": "figures_list",
+      "name": "فهرست نمودارها، عکس‌ها و نقشه‌ها",
+      "patterns": ["فهرست شکل", "فهرست نمودار", "فهرست تصاویر", "فهرست شکل‌ها"],
+      "required": false
+    },
+    {
+      "id": "ch1_intro",
+      "name": "فصل اول: مقدمه، کلیات و بیان مسئله",
+      "patterns": ["فصل اول", "فصل 1", "مقدمه", "بیان مسئله", "کلیات"],
+      "required": true
+    },
+    {
+      "id": "ch2_literature",
+      "name": "فصل دوم: بررسی متون و پیشینه تحقیق",
+      "patterns": ["فصل دوم", "فصل 2", "بررسی متون", "مرور منابع", "پیشینه تحقیق"],
+      "required": true
+    },
+    {
+      "id": "ch3_methods",
+      "name": "فصل سوم: مواد و روش کار",
+      "patterns": ["فصل سوم", "فصل 3", "مواد و روش", "روش کار", "روش تحقیق", "روش پژوهش"],
+      "required": true
+    },
+    {
+      "id": "ch4_results",
+      "name": "فصل چهارم: یافته‌ها و نتایج",
+      "patterns": ["فصل چهارم", "فصل 4", "یافته‌ها", "یافته ها", "نتایج"],
+      "required": true
+    },
+    {
+      "id": "ch5_discussion",
+      "name": "فصل پنجم: بحث و نتیجه‌گیری",
+      "patterns": ["فصل پنجم", "فصل 5", "بحث و نتیجه", "بحث", "نتیجه‌گیری"],
+      "required": true
+    },
+    {
+      "id": "references",
+      "name": "فهرست منابع و مآخذ (ونکوور / هاروارد)",
+      "patterns": ["فهرست منابع", "منابع و مآخذ", "مراجع", "منابع"],
+      "required": true
+    },
+    {
+      "id": "appendices",
+      "name": "پیوست‌ها (پرسشنامه، فرم‌ها و ...)",
+      "patterns": ["پیوست", "ضمایم", "پیوست‌ها"],
+      "required": false
+    },
+    {
+      "id": "advisor_approval",
+      "name": "تأییدیه استاد راهنما مبنی بر آمادگی دفاع",
+      "patterns": ["تأییدیه استاد راهنما", "تاییدیه استاد راهنما", "آمادگی دفاع"],
+      "required": true
+    },
+    {
+      "id": "defense_minutes",
+      "name": "صورتجلسه دفاع هیئت داوران و معاونت آموزشی",
+      "patterns": ["صورتجلسه دفاع", "هیئت داوران", "هیأت داوران"],
+      "required": true
+    },
+    {
+      "id": "en_declaration",
+      "name": "اظهارنامه به زبان انگلیسی (Declaration)",
+      "patterns": ["declaration", "hereby i declare that the present thesis"],
+      "required": true
+    },
+    {
+      "id": "en_abstract",
+      "name": "چکیده انگلیسی (Abstract) و Keywords",
+      "patterns": ["abstract", "keywords", "key words"],
+      "required": true
+    },
+    {
+      "id": "en_title_page",
+      "name": "صفحه عنوان انگلیسی (مطابق پیوست ۳ شیوه نامه)",
+      "patterns": ["tehran university of medical sciences", "faculty of", "thesis", "supervisor"],
+      "required": true
+    },
+    {
+      "id": "white_page_last",
+      "name": "صفحه سفید پایانی",
+      "patterns": [],
+      "required": true,
+      "manual_check": true
+    },
+    {
+      "id": "en_back_cover",
+      "name": "پشت جلد انگلیسی (زرکوب)",
+      "patterns": [],
+      "required": true,
+      "manual_check": true
+    }
+  ],
+  "tums_special_rules": {
+    "forbid_et_al_in_refs": true,
+    "require_chapter_odd_start": true,
+    "enforce_vancouver_or_harvard": true,
+    "max_intro_review_pct": 30
+  }
+}
+

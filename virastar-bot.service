@@ -1,0 +1,16 @@
+[Unit]
+Description=Bale Virastar Thesis Bot
+After=network.target
+
+[Service]
+Type=simple
+User=root
+WorkingDirectory=/root/bale-thesis-bot
+ExecStart=/usr/bin/python3 bot.py
+Restart=always
+RestartSec=5
+Environment=PYTHONUNBUFFERED=1
+
+[Install]
+WantedBy=multi-user.target
+
