@@ -238,8 +238,42 @@ def handle(update, pool):
 
 import socket
 
+def _start_health_server():
+    """اجرای وب‌سرور سبک روی 0.0.0.0 برای تایید سلامت در هاست‌های ابری (مانند Render)."""
+    port_str = os.environ.get("PORT")
+    if not port_str:
+        return
+    try:
+        port = int(port_str)
+    except ValueError:
+        port = 10000
+
+    from http.server import HTTPServer, BaseHTTPRequestHandler
+
+    class HealthHandler(BaseHTTPRequestHandler):
+        def do_GET(self):
+            self.send_response(200)
+            self.send_header("Content-type", "application/json; charset=utf-8")
+            self.end_headers()
+            self.wfile.write(b'{"status":"ok","service":"virastar-bale-bot"}')
+
+        def log_message(self, format, *args):
+            return
+
+    try:
+        server = HTTPServer(("0.0.0.0", port), HealthHandler)
+        t = threading.Thread(target=server.serve_forever, daemon=True)
+        t.start()
+        log.info("Health server listening on 0.0.0.0:%d", port)
+    except Exception as e:
+        log.warning("Could not start health server on port %d: %s", port, e)
+
+
 def _acquire_lock_port(port=49250):
     """جلوگیری از اجرای همزمان چند نسخه از ربات با استفاده از پورت لوکال."""
+    # روی هاست‌های ابری مانند Render نیازی به قفل پورت لوکال نیست
+    if os.environ.get("RENDER") or os.environ.get("PORT"):
+        return True
     s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     try:
         s.bind(("127.0.0.1", port))
@@ -251,6 +285,7 @@ def _acquire_lock_port(port=49250):
 
 
 def main():
+    _start_health_server()
     lock_sock = _acquire_lock_port()
     if lock_sock is None:
         raise SystemExit("یک نسخه دیگر از ربات در پس‌زمینه در حال اجراست.")
