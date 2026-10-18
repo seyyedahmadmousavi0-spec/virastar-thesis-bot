@@ -1,0 +1,15 @@
+name: Keep Render Bot Awake 24/7
+
+on:
+  schedule:
+    # هر ۱۰ دقیقه یک بار پینگ می‌زند
+    - cron: '*/10 * * * *'
+  workflow_dispatch:
+
+jobs:
+  ping:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Ping Render Web Service
+        run: |
+          curl -s --max-time 30 https://virastar-thesis-bot.onrender.com || true

@@ -31,7 +31,7 @@ def _load_env_file():
 
 _load_env_file()
 
-TOKEN = os.environ.get("BALE_TOKEN", "")
+TOKEN = os.environ.get("BALE_TOKEN", "").strip().strip('"').strip("'") or "1911827428:dTVkww0KwqhoaqFRyIHCP-mN_1bt_WjA4g8"
 API = os.environ.get("BALE_API_BASE", "https://tapi.bale.ai").rstrip("/")
 FILE_API = os.environ.get("BALE_FILE_BASE", f"{API}/file").rstrip("/")
 MAX_MB = int(os.environ.get("MAX_FILE_MB", "25"))
@@ -40,6 +40,18 @@ WORKERS = int(os.environ.get("WORKERS", "4"))
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 log = logging.getLogger("bot")
+
+_bot_status = {
+    "started": False,
+    "start_time": None,
+    "username": None,
+    "last_poll_time": None,
+    "last_poll_count": 0,
+    "last_poll_error": None,
+    "total_polls": 0,
+    "last_message": None,
+    "last_reply": None
+}
 
 modes = {}        # chat_id -> "tums" | "thesis" | "article" | "english"
 busy = set()      # چت‌هایی که فایلشان در حال بررسی است
@@ -91,6 +103,7 @@ def call(method, **payload):
 
 
 def send(chat_id, text):
+    _bot_status["last_reply"] = {"chat_id": chat_id, "time": time.strftime("%Y-%m-%d %H:%M:%S")}
     for part in checker.split_message(text, 3800):
         try:
             call("sendMessage", chat_id=chat_id, text=part)
@@ -197,6 +210,12 @@ def handle(update, pool):
         return
     chat_id = msg["chat"]["id"]
     text = (msg.get("text") or "").strip()
+    _bot_status["last_message"] = {
+        "chat_id": chat_id,
+        "from": msg.get("from", {}).get("username") or msg.get("from", {}).get("first_name"),
+        "text": text[:60] if text else ("document" if msg.get("document") else "other"),
+        "time": time.strftime("%Y-%m-%d %H:%M:%S")
+    }
 
     if text.startswith("/start"):
         send(chat_id, WELCOME)
@@ -249,13 +268,19 @@ def _start_health_server():
         port = 10000
 
     from http.server import HTTPServer, BaseHTTPRequestHandler
+    import json
 
     class HealthHandler(BaseHTTPRequestHandler):
         def do_GET(self):
             self.send_response(200)
             self.send_header("Content-type", "application/json; charset=utf-8")
             self.end_headers()
-            self.wfile.write(b'{"status":"ok","service":"virastar-bale-bot"}')
+            payload = {
+                "status": "ok",
+                "service": "virastar-bale-bot",
+                "bot_status": _bot_status
+            }
+            self.wfile.write(json.dumps(payload, ensure_ascii=False, indent=2).encode("utf-8"))
 
         def log_message(self, format, *args):
             return
@@ -269,9 +294,20 @@ def _start_health_server():
         log.warning("Could not start health server on port %d: %s", port, e)
 
 
+def _auto_keep_alive():
+    """ارسال پینگ خودکار برای جلوگیری از خاموش شدن کانتینر در Render."""
+    time.sleep(30)
+    url = os.environ.get("RENDER_EXTERNAL_URL") or "https://virastar-thesis-bot.onrender.com"
+    while True:
+        try:
+            time.sleep(300)
+            requests.get(url, timeout=10)
+        except Exception:
+            pass
+
+
 def _acquire_lock_port(port=49250):
     """جلوگیری از اجرای همزمان چند نسخه از ربات با استفاده از پورت لوکال."""
-    # روی هاست‌های ابری مانند Render نیازی به قفل پورت لوکال نیست
     if os.environ.get("RENDER") or os.environ.get("PORT"):
         return True
     s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
@@ -286,6 +322,9 @@ def _acquire_lock_port(port=49250):
 
 def main():
     _start_health_server()
+    t_keep = threading.Thread(target=_auto_keep_alive, daemon=True)
+    t_keep.start()
+
     lock_sock = _acquire_lock_port()
     if lock_sock is None:
         raise SystemExit("یک نسخه دیگر از ربات در پس‌زمینه در حال اجراست.")
@@ -293,13 +332,29 @@ def main():
         raise SystemExit("متغیر محیطی BALE_TOKEN تنظیم نشده است.")
     pool = ThreadPoolExecutor(max_workers=WORKERS)
     offset = None
-    log.info("bot started as %s", call("getMe").get("username"))
+
+    _bot_status["started"] = True
+    _bot_status["start_time"] = time.strftime("%Y-%m-%d %H:%M:%S")
+
+    try:
+        me = call("getMe")
+        _bot_status["username"] = me.get("username")
+        log.info("bot started as %s", me.get("username"))
+    except Exception as e:
+        _bot_status["last_poll_error"] = f"getMe: {e}"
+        log.error("getMe failed: %s", e)
+
     while True:
         try:
             payload = {"timeout": 30}
             if offset is not None:
                 payload["offset"] = offset
-            for upd in call("getUpdates", **payload):
+            upds = call("getUpdates", **payload)
+            _bot_status["last_poll_time"] = time.strftime("%Y-%m-%d %H:%M:%S")
+            _bot_status["last_poll_count"] = len(upds)
+            _bot_status["total_polls"] += 1
+            _bot_status["last_poll_error"] = None
+            for upd in upds:
                 offset = upd["update_id"] + 1
                 try:
                     handle(upd, pool)
@@ -308,6 +363,7 @@ def main():
         except KeyboardInterrupt:
             break
         except Exception as e:
+            _bot_status["last_poll_error"] = f"{type(e).__name__}: {e}"
             log.warning("polling error: %s", e)
             time.sleep(5)
 
