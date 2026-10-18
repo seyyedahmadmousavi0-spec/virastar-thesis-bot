@@ -92,6 +92,15 @@ HELP = (
     "🔒 فایل‌های ارسالی پس از بررسی بلافاصله از سرور حذف می‌شوند."
 )
 
+MAIN_KEYBOARD = {
+    "keyboard": [
+        [{"text": "🎓 پایان‌نامه"}, {"text": "📑 مقاله پژوهشی"}],
+        [{"text": "🇬🇧 متن انگلیسی"}, {"text": "ℹ️ وضعیت جاری"}],
+        [{"text": "📖 راهنما"}, {"text": "🔄 شروع مجدد"}]
+    ],
+    "resize_keyboard": True
+}
+
 
 # ---------------------------- API بله ----------------------------
 def call(method, **payload):
@@ -102,19 +111,27 @@ def call(method, **payload):
     return data["result"]
 
 
-def send(chat_id, text):
+def send(chat_id, text, reply_markup=MAIN_KEYBOARD):
     _bot_status["last_reply"] = {"chat_id": chat_id, "time": time.strftime("%Y-%m-%d %H:%M:%S")}
-    for part in checker.split_message(text, 3800):
+    parts = checker.split_message(text, 3800)
+    for i, part in enumerate(parts):
+        payload = {"chat_id": chat_id, "text": part}
+        if i == len(parts) - 1 and reply_markup is not None:
+            payload["reply_markup"] = reply_markup
         try:
-            call("sendMessage", chat_id=chat_id, text=part)
+            call("sendMessage", **payload)
         except Exception as e:
             log.warning("sendMessage failed: %s", e)
 
 
-def send_file(chat_id, path, caption=""):
+def send_file(chat_id, path, caption="", reply_markup=MAIN_KEYBOARD):
+    data = {"chat_id": chat_id, "caption": caption}
+    if reply_markup is not None:
+        import json
+        data["reply_markup"] = json.dumps(reply_markup)
     with open(path, "rb") as f:
         r = http.post(f"{API}/bot{TOKEN}/sendDocument",
-                      data={"chat_id": chat_id, "caption": caption},
+                      data=data,
                       files={"document": (os.path.basename(path), f)}, timeout=120)
     if not r.json().get("ok"):
         raise RuntimeError(f"sendDocument: {r.text[:200]}")
@@ -217,27 +234,27 @@ def handle(update, pool):
         "time": time.strftime("%Y-%m-%d %H:%M:%S")
     }
 
-    if text.startswith("/start"):
+    if text.startswith("/start") or text in ("🔄 شروع مجدد", "شروع مجدد", "شروع", "start"):
         send(chat_id, WELCOME)
-    elif text.startswith("/help"):
+    elif text.startswith("/help") or text in ("📖 راهنما", "راهنما", "help"):
         send(chat_id, HELP)
-    elif text.startswith("/thesis"):
+    elif text.startswith("/thesis") or text in ("🎓 پایان‌نامه", "پایان‌نامه", "پایان نامه"):
         modes[chat_id] = "thesis"
         send(chat_id, "🎓 الگوی «پایان‌نامه» فعال شد. فایل Word، PDF یا متن خود را ارسال کنید.")
-    elif text.startswith("/article"):
+    elif text.startswith("/article") or text in ("📑 مقاله پژوهشی", "مقاله پژوهشی", "مقاله"):
         modes[chat_id] = "article"
         send(chat_id, "📑 الگوی «مقاله علمی/پژوهشی» فعال شد. فایل Word، PDF یا متن خود را ارسال کنید.")
-    elif text.startswith("/english"):
+    elif text.startswith("/english") or text in ("🇬🇧 متن انگلیسی", "متن انگلیسی", "انگلیسی"):
         modes[chat_id] = "english"
         send(chat_id, "🇬🇧 الگوی «متن/مقاله انگلیسی» فعال شد. متن یا فایل انگلیسی خود را ارسال فرمایید.")
-    elif text.startswith("/status"):
+    elif text.startswith("/status") or text in ("ℹ️ وضعیت جاری", "وضعیت جاری", "وضعیت"):
         cur_mode = modes.get(chat_id, "thesis")
         title_map = {
             "thesis": "پایان‌نامه دانشگاهی 🎓",
             "article": "مقاله پژوهشی 📑",
             "english": "متن انگلیسی 🇬🇧"
         }
-        send(chat_id, f"📌 حالت فعال شما: {title_map.get(cur_mode, cur_mode)}\nبرای تغییر می‌توانید از دستورات /thesis ، /article یا /english استفاده کنید.")
+        send(chat_id, f"📌 حالت فعال شما: {title_map.get(cur_mode, cur_mode)}\nبرای تغییر می‌توانید از دکمه‌های زیر استفاده کنید.")
     elif msg.get("document"):
         with lock:
             if chat_id in busy:
@@ -320,6 +337,23 @@ def _acquire_lock_port(port=49250):
         return None
 
 
+def setup_commands():
+    """ثبت رسمی دستورات ربات در منوی پیام‌رسان بله."""
+    try:
+        commands = [
+            {"command": "start", "description": "شروع کار با ربات"},
+            {"command": "thesis", "description": "بررسی پایان‌نامه و رساله"},
+            {"command": "article", "description": "بررسی مقاله پژوهشی/علمی"},
+            {"command": "english", "description": "بررسی متون انگلیسی"},
+            {"command": "status", "description": "مشاهده وضعیت جاری"},
+            {"command": "help", "description": "راهنمای کار با ربات"}
+        ]
+        call("setMyCommands", commands=commands)
+        log.info("Bale bot commands registered successfully")
+    except Exception as e:
+        log.warning("Could not set bot commands: %s", e)
+
+
 def main():
     _start_health_server()
     t_keep = threading.Thread(target=_auto_keep_alive, daemon=True)
@@ -340,6 +374,7 @@ def main():
         me = call("getMe")
         _bot_status["username"] = me.get("username")
         log.info("bot started as %s", me.get("username"))
+        setup_commands()
     except Exception as e:
         _bot_status["last_poll_error"] = f"getMe: {e}"
         log.error("getMe failed: %s", e)
