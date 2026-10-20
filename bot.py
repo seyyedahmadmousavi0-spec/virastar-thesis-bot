@@ -85,11 +85,11 @@ _health_server = None
 WELCOME = (
     "سلام 👋\n"
     "به سامانه بازوی «ویراستار پژوهش» خوش آمدید.\n\n"
-    "این سامانه جهت بررسی، ویرایش و ارزیابی جامع پایان‌نامه‌ها، رساله‌ها و مقالات علمی طراحی شده است:\n"
+    "این سامانه برای بازبینی قاعده‌محور پایان‌نامه‌ها، رساله‌ها و مقالات طراحی شده است. یافته‌ها پیشنهاد بازبینی‌اند و صحت علمی یا نبود خطا را تضمین نمی‌کنند:\n"
     "• املای دقیق و تایپوگرافی فارسی (نیم‌فاصله، ی/ک، ارقام، پیشوندها و پسوندها)\n"
     "• سبک و لحن علمی (حذف عبارات مبالغه‌آمیز، محاوره‌ای و ادعاهای قطعی بدون شاهد)\n"
     "• دستور زبان و ساختار متون فارسی و انگلیسی (Grammar, Articles, Prepositions)\n"
-    "• ارزیابی انسجام، پیوستگی و ساختار فصول\n"
+    "• بررسی برخی نشانه‌های ساختاری و بخش‌های سند\n"
     "• ارجاع‌دهی درون‌متنی و تطبیق با فهرست منابع (ونکوور، هاروارد و APA)\n"
     "• صفحه‌آرایی فایل Word (حاشیه‌ها، فونت‌ها، تراز و شماره‌گذاری)\n"
     "• علامت‌گذاری زرد روی خطاهای متنی در فایل Word همراه با کامنت‌های تفصیلی (بدون دستکاری متن اصلی)\n\n"
@@ -109,7 +109,7 @@ HELP = (
     "• دستور /thesis برای پایان‌نامه‌ها و رساله‌ها (پیش‌فرض).\n"
     "• دستور /tums برای پروفایل دانشگاه علوم پزشکی تهران؛ انطباق قطعی نیازمند بازبینی شیوه‌نامه است.\n"
     "• دستور /article برای مقالات پژوهشی و علمی.\n"
-    "• دستور /english برای ویرایش تخصصی متون انگلیسی.\n\n"
+    "• دستور /english برای بازبینی قاعده‌محور متون انگلیسی.\n\n"
     "۲) ارسال ورودی:\n"
     "• فایل Word (.docx): خروجی پیش‌فرض گزارش است. برای دریافت کپی حاشیه‌نویسی‌شده، در توضیح فایل /annotate بنویسید. همچنین خلاصه‌ای در چت و فایل متنی گزارش ارسال خواهد شد.\n"
     "• فایل PDF: متن استخراج شده و گزارش جامع ارزیابی صادر می‌شود (فایل‌های تصویری نیازمند OCR هستند).\n"
@@ -191,16 +191,19 @@ def download(file_id, dest):
     if not isinstance(file_path, str) or not file_path or file_path.startswith(("/", "\\")) or "\\" in file_path or any(part in {".", ".."} for part in file_path.split("/")):
         raise BaleAPIError("getFile: invalid file path")
     url = f"{FILE_API}/bot{TOKEN}/{quote(file_path, safe='/')}"
-    with http.get(url, stream=True, timeout=(10, 120), allow_redirects=False) as r:
-        if r.status_code != 200:
-            raise BaleAPIError(f"download: HTTP {r.status_code}")
-        size = 0
-        with open(dest, "wb") as f:
-            for chunk in r.iter_content(65536):
-                size += len(chunk)
-                if size > MAX_MB * 1024 * 1024:
-                    raise ValueError("too_big")
-                f.write(chunk)
+    try:
+        with http.get(url, stream=True, timeout=(10, 120), allow_redirects=False) as r:
+            if r.status_code != 200:
+                raise BaleAPIError(f"download: HTTP {r.status_code}")
+            size = 0
+            with open(dest, "wb") as f:
+                for chunk in r.iter_content(65536):
+                    size += len(chunk)
+                    if size > MAX_MB * 1024 * 1024:
+                        raise ValueError("too_big")
+                    f.write(chunk)
+    except requests.RequestException:
+        raise BaleAPIError("download: transport failure") from None
 
 
 # ---------------------------- پردازش اسناد ----------------------------
@@ -251,6 +254,10 @@ def process_document(chat_id, doc, annotate_requested=False, mode=None):
                 else:
                     send(chat_id, "برای این سند محدودهٔ قابل‌اطمینانی برای درج کامنت پیدا نشد؛ جزئیات در گزارش موجود است.")
 
+    except BaleAPIError:
+        log.warning("Document transport failed")
+        send(chat_id, "❌ دریافت فایل یا ارسال نتیجه به‌دلیل مشکل ارتباط با بله تکمیل نشد. "
+             "ممکن است بخشی از گزارش رسیده باشد؛ کمی بعد دوباره تلاش کنید.")
     except ValueError as e:
         send(chat_id, f"❌ حجم فایل بیشتر از {MAX_MB} مگابایت است." if str(e) == "too_big"
              else "❌ فایل ارسال‌شده قابل پردازش نبود.")

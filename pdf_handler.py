@@ -14,10 +14,10 @@ def normalize_presentation_forms_only(text):
 
 def _failure(code):
     messages = {
-        "dependency": "PDF extraction dependency is unavailable.",
-        "encrypted": "Encrypted PDF requires an unlocked readable copy.",
-        "budget": "PDF exceeds its page or text extraction budget.",
-        "read_error": "Reliable PDF extraction failed; manual review is required.",
+        "dependency": "ابزار استخراج PDF روی میزبان در دسترس نیست؛ بررسی انجام نشد.",
+        "encrypted": "PDF رمزگذاری شده است؛ یک نسخهٔ قابل‌خواندن و بدون رمز ارسال کنید.",
+        "budget": "تعداد صفحات یا حجم متن PDF از ظرفیت بررسی بیشتر است؛ سند را به بخش‌های کوچک‌تر تقسیم کنید.",
+        "read_error": "استخراج قابل‌اعتماد PDF موفق نبود؛ فایل و متن آن نیازمند بررسی دستی است.",
     }
     return {"ok": False, "error_code": code, "error": messages[code], "is_scanned": False,
             "pages": [], "total_pages": 0, "total_chars": 0}

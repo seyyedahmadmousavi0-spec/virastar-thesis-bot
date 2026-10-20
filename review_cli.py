@@ -67,7 +67,7 @@ def main(argv=None, *, engine=None):
         output = {"text": lambda: text, "json": lambda: json_report(data),
                   "html": lambda: html_report(data), "csv": lambda: csv_report(data)}[args.format]()
         print(output)
-        if any(i.rule_id == "pdf_read_error" for i in issues):
+        if stats.get("analysis_status") == "failed" or any(i.rule_id == "pdf_read_error" for i in issues):
             return 2
         return int(bool(args.fail_on and any(i.confidence == args.fail_on for i in issues)))
     except (OSError, ValueError, DocumentIntegrityError, json.JSONDecodeError) as error:

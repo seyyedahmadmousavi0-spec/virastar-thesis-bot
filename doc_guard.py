@@ -54,7 +54,12 @@ def safe_filename(filename: str, default: str = "document") -> str:
     stem = stem.rstrip(" .")
     if stem.upper() in {"CON", "PRN", "AUX", "NUL"} or re.fullmatch(r"(?:COM|LPT)[1-9]", stem.upper()):
         stem = "_" + stem
-    return stem[:160] + extension[:16]
+    # Linux limits filename components by UTF-8 bytes, not character count.
+    # Leave room for work/annotation prefixes and nested Windows temp paths.
+    extension = extension[:16]
+    budget = 180 - len(extension.encode("utf-8"))
+    stem = stem[:120].encode("utf-8")[:budget].decode("utf-8", errors="ignore").rstrip(" .")
+    return (stem or "document") + extension
 
 
 class DocumentGuard:

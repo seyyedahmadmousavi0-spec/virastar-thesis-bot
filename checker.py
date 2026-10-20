@@ -235,7 +235,9 @@ def _prepare_rules(rules, mode):
 
 def _finish_analysis(issues, stats, started, rules=None):
     from rule_registry import enrich_issue
-    issues = [issue for issue in issues if issue.rule_id not in (rules or {}).get("disabled_rules", [])]
+    # A parser failure is an operational result, not an optional editing rule.
+    issues = [issue for issue in issues if issue.rule_id == "pdf_read_error"
+              or issue.rule_id not in (rules or {}).get("disabled_rules", [])]
     limit = (rules or {}).get("max_findings", 10000)
     if len(issues) > limit:
         issues = issues[:limit] + [Issue("findings_limit", "warn", "تعداد یافته‌های سند محدود شده است؛ بخش‌های باقیمانده نیازمند بازبینی‌اند.",
@@ -1207,6 +1209,8 @@ def analyze_pdf(pdf_path, mode="thesis", rules=None):
     issues, stats = [], {"mode": mode, "is_pdf": True, "file_sha256": pre_hash}
 
     if not extracted.get("ok"):
+        stats["analysis_status"] = "failed"
+        stats["analysis_error_code"] = extracted.get("error_code", "read_error")
         issues.append(Issue("pdf_read_error", "error", extracted.get("error", "خطا در خواندن فایل PDF"),
                             confidence=ConfidenceLevel.HIGH_A.value))
         return None, _finish_analysis(issues, stats, started, rules), stats
@@ -1356,6 +1360,8 @@ def build_report(issues, stats, rules, examples=1000):
         f"• شیوه نامه / الگوی انتخابی: {mode_title}",
         f"• تعداد پاراگراف‌ها: {stats.get('paragraphs', 0)} | تعداد کلمات: {stats.get('words', 0)}",
     ]
+    if stats.get("analysis_status") == "failed":
+        lines.append("❌ بررسی سند تکمیل نشد؛ متن قابل‌اعتماد برای ارزیابی در دسترس نبود.")
     if hidden_ambiguous and rules.get("strict", True):
         lines.append(f"• موارد مبهم حذف‌شده از فهرست خطاها: {hidden_ambiguous}؛ بررسی دستی لازم است.")
     if "total_pages" in stats:
@@ -1447,7 +1453,8 @@ def build_summary(issues, stats, rules):
     sev = Counter(it.severity for it in issues)
     conf = Counter(getattr(it, "confidence", "A") for it in issues)
     lines = [
-        f"📄 بررسی «{mode_title}» به پایان رسید",
+        (f"❌ بررسی «{mode_title}» تکمیل نشد؛ جزئیات خطای خواندن در گزارش آمده است."
+         if stats.get("analysis_status") == "failed" else f"📄 بررسی «{mode_title}» به پایان رسید"),
         f"📊 {stats.get('paragraphs', 0)} پاراگراف · {stats.get('words', 0)} کلمه" +
         (f" · {stats.get('tables', 0)} جدول" if stats.get("tables") else ""),
         f"{SEVERITY_ICON['error']} {sev['error']} مورد گزارش‌شده  ·  {SEVERITY_ICON['warn']} {sev['warn']} هشدار  ·  {SEVERITY_ICON['info']} {sev['info']} پیشنهاد",

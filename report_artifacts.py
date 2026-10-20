@@ -11,7 +11,7 @@ from pathlib import Path
 from doc_guard import atomic_write
 
 SCHEMA_VERSION = "2.0"
-PRODUCT_VERSION = "2.0.0"
+PRODUCT_VERSION = "2.0.1"
 CONFIDENCE_LABELS = {"A": "اطمینان بالا", "B": "نیازمند بازبینی", "C": "مبهم"}
 
 
@@ -29,7 +29,8 @@ def report_data(issues, stats, rules):
     keys = {"mode", "words", "body_words", "paragraphs", "tables", "images", "chapters", "total_pages",
             "table_cells_analyzed", "coverage_limits", "file_sha256", "is_pdf", "is_scanned",
             "is_raw_text", "block_count", "story_counts", "partial_blocks", "protected_content_audit",
-            "extraction_pages", "analysis_duration_seconds", "skipped_blocks", "source_chars", "analysis_text_sha256"}
+            "extraction_pages", "analysis_duration_seconds", "skipped_blocks", "source_chars", "analysis_text_sha256",
+            "analysis_status", "analysis_error_code"}
     safe_stats = {key: value for key, value in stats.items() if key in keys}
     return {
         "schema_version": SCHEMA_VERSION,
@@ -42,6 +43,8 @@ def report_data(issues, stats, rules):
         "stats": safe_stats,
         "limitations": ["این بررسی قاعده‌محور است و صحت محتوای علمی را تأیید نمی‌کند.",
                         "سطح اطمینان احتمال آماری یا درصد دقت نیست.",
+                        *(["بررسی سند تکمیل نشد؛ متن قابل‌اعتماد برای ارزیابی در دسترس نبود."]
+                          if stats.get("analysis_status") == "failed" else []),
                         *stats.get("coverage_limits", [])],
         "findings": rows,
     }
