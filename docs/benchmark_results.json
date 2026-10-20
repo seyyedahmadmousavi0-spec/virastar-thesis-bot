@@ -1,0 +1,123 @@
+{
+  "dataset": "synthetic-smoke-v1",
+  "human_validated": false,
+  "samples": 26,
+  "negative_policy": "error/warn only; stylistic info on negatives is not labelled",
+  "scope": "Only designated positive rules and error/warn on negative fixtures are scored. No population estimate.",
+  "unlabelled_other_detections": 1,
+  "manual_review_detections": 7,
+  "per_rule": {
+    "ACAD_EMOTIONAL": {
+      "tp": 1,
+      "fp": 0,
+      "fn": 0,
+      "tn": 12,
+      "precision": 1.0,
+      "recall": 1.0
+    },
+    "ACAD_FIRST_PERSON": {
+      "tp": 1,
+      "fp": 0,
+      "fn": 0,
+      "tn": 12,
+      "precision": 1.0,
+      "recall": 1.0
+    },
+    "EN_ARTICLE": {
+      "tp": 1,
+      "fp": 0,
+      "fn": 0,
+      "tn": 12,
+      "precision": 1.0,
+      "recall": 1.0
+    },
+    "EN_PREP": {
+      "tp": 1,
+      "fp": 0,
+      "fn": 0,
+      "tn": 12,
+      "precision": 1.0,
+      "recall": 1.0
+    },
+    "EN_SVA": {
+      "tp": 1,
+      "fp": 0,
+      "fn": 0,
+      "tn": 12,
+      "precision": 1.0,
+      "recall": 1.0
+    },
+    "EN_WORDINESS": {
+      "tp": 1,
+      "fp": 0,
+      "fn": 0,
+      "tn": 12,
+      "precision": 1.0,
+      "recall": 1.0
+    },
+    "arabic_letters": {
+      "tp": 1,
+      "fp": 0,
+      "fn": 0,
+      "tn": 12,
+      "precision": 1.0,
+      "recall": 1.0
+    },
+    "common_mistake": {
+      "tp": 1,
+      "fp": 0,
+      "fn": 0,
+      "tn": 12,
+      "precision": 1.0,
+      "recall": 1.0
+    },
+    "comparative_space": {
+      "tp": 1,
+      "fp": 0,
+      "fn": 0,
+      "tn": 12,
+      "precision": 1.0,
+      "recall": 1.0
+    },
+    "mi_prefix": {
+      "tp": 1,
+      "fp": 0,
+      "fn": 0,
+      "tn": 12,
+      "precision": 1.0,
+      "recall": 1.0
+    },
+    "no_space_after_punct": {
+      "tp": 1,
+      "fp": 0,
+      "fn": 0,
+      "tn": 12,
+      "precision": 1.0,
+      "recall": 1.0
+    },
+    "plural_space": {
+      "tp": 1,
+      "fp": 0,
+      "fn": 0,
+      "tn": 12,
+      "precision": 1.0,
+      "recall": 1.0
+    },
+    "space_before_punct": {
+      "tp": 1,
+      "fp": 0,
+      "fn": 0,
+      "tn": 12,
+      "precision": 1.0,
+      "recall": 1.0
+    },
+    "straight_quotes": {
+      "tp": 1,
+      "fp": 0,
+      "fn": 0,
+      "tn": 12,
+      "precision": 1.0,
+      "recall": 1.0
+    }
+  }
+}

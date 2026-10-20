@@ -9,6 +9,8 @@ import copy
 import json
 import os
 import re
+import time
+import hashlib
 import unicodedata
 from collections import Counter, defaultdict
 from dataclasses import dataclass
@@ -22,6 +24,11 @@ import academic_checker
 import en_checker
 import pdf_handler
 import tums_checker
+from analysis_model import ConfidenceLevel, Issue, OffsetMapper
+from doc_guard import DocumentGuard, safe_filename, sha256_file, validate_document, immutable_input
+from protected_content import ProtectedContentDetector
+import safe_annotator
+from rule_registry import FindingBuffer, bounded_findings
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 ZWNJ = "\u200c"
@@ -178,16 +185,7 @@ RULE_TITLES = {
 }
 
 
-@dataclass
-class Issue:
-    rule: str
-    severity: str
-    message: str
-    loc: str = ""
-    snippet: str = ""
-    par_index: int = -1
-    suggestion: str = ""
-    target_text: str = ""
+# Issue is imported from analysis_model
 
 
 # ----------------------------------------------------------------------------
@@ -198,6 +196,9 @@ def load_rules(path=None, mode="thesis"):
     base_path = path or os.path.join(HERE, "rules.json")
     with open(base_path, encoding="utf-8") as f:
         rules = json.load(f)
+    rules.setdefault("strict", True)
+    rules.setdefault("protected_terms", [])
+    rules.setdefault("disabled_rules", [])
 
     if mode == "tums":
         tums_path = os.path.join(HERE, "profiles", "tums.json")
@@ -223,7 +224,60 @@ def load_rules(path=None, mode="thesis"):
                 "required_sections": [],
                 "recommended_sections": []
             }
-    return rules
+    from rule_registry import validate_rules
+    return validate_rules(rules, mode)
+
+
+def _prepare_rules(rules, mode):
+    from rule_registry import validate_rules
+    return load_rules(mode=mode) if rules is None else validate_rules(copy.deepcopy(rules), mode)
+
+
+def _finish_analysis(issues, stats, started, rules=None):
+    from rule_registry import enrich_issue
+    issues = [issue for issue in issues if issue.rule_id not in (rules or {}).get("disabled_rules", [])]
+    limit = (rules or {}).get("max_findings", 10000)
+    if len(issues) > limit:
+        issues = issues[:limit] + [Issue("findings_limit", "warn", "تعداد یافته‌های سند محدود شده است؛ بخش‌های باقیمانده نیازمند بازبینی‌اند.",
+                                       confidence="B", extraction_status="analysis_limited")]
+    stats["analysis_duration_seconds"] = round(time.monotonic() - started, 3)
+    for issue in issues:
+        enrich_issue(issue)
+    return deduplicate_issues(issues)
+
+
+def _attach_block_issues(issues, block):
+    for issue in issues:
+        issue.block_id = block.block_id
+        issue.source_part = block.source_part
+        issue.xml_path = block.xml_path
+        issue.story = block.story
+        issue.paragraph_index = block.paragraph_index
+        issue.extraction_status = block.extraction_status
+        issue.loc = issue.loc or block.location
+        if issue.target_text:
+            issue.validate_evidence(block.text)
+        if block.extraction_status != "native" and issue.confidence == "A":
+            issue.confidence = "B"
+    return issues
+
+
+def _protected_audit(blocks, block_limit=200000):
+    digest = hashlib.sha256()
+    counts = Counter()
+    skipped = 0
+    for block in blocks:
+        text = block if isinstance(block, str) else block.text
+        if len(text) > block_limit:
+            skipped += 1
+            continue
+        for span in ProtectedContentDetector.find_spans(text):
+            counts[span.kind] += 1
+            encoded = span.text.encode("utf-8")
+            digest.update(len(encoded).to_bytes(8, "big"))
+            digest.update(encoded)
+    return {"count": sum(counts.values()), "by_kind": dict(counts),
+            "ordered_sha256": digest.hexdigest(), "skipped_blocks": skipped}
 
 
 def norm(s):
@@ -346,7 +400,7 @@ SCIENTIFIC_HEAD_RE = re.compile(
     r"(?:(?:p|r|t|f|z)\s*[<>=~]|doi:|url:|https?://|www\.|n\s*=|ci\s*|ph\s*|covid-?)\s*$",
     re.IGNORECASE
 )
-ABBR_EXEMPT_RE = re.compile(r"(?:[هـقصدجم]\.[شقم]?)")
+ABBR_EXEMPT_RE = re.compile(r"(?:هـ\.[شق]|ه\.[شق])")
 
 REDUPLICATION_WORDS = {
     "کم", "ذره", "پله", "تک", "رفته", "قطره", "دسته", "بخش", "صفحه",
@@ -408,14 +462,64 @@ def _word_re(w):
 
 
 def check_text(par_index, text, loc, rules, in_refs=False, in_declaration=False):
-    out = []
+    from protected_content import ProtectedSpan
+    if len(text) > rules.get("max_analysis_block_chars", 200000):
+        return [Issue("analysis_limit", "warn", "Block exceeds the analysis budget; manual review required.",
+                      loc=loc, par_index=par_index, confidence="B", extraction_status="analysis_skipped")]
+    protected = ProtectedContentDetector.find_spans(text)
+    if in_refs:
+        # Bibliographic names and titles are quoted source records, not author prose.
+        protected.append(ProtectedSpan(0, len(text), "bibliography_entry", text))
+    for term in rules.get("protected_terms", []):
+        if term:
+            for m in re.finditer(re.escape(term), text):
+                protected.append(ProtectedSpan(m.start(), m.end(), "configured_term", m.group()))
+    issues = _check_text(par_index, text, loc, rules, in_refs, in_declaration)
+    result = []
+    for issue in issues:
+        if issue.rule_id in rules.get("disabled_rules", []):
+            continue
+        if issue.target_text:
+            exact = (0 <= issue.char_start < issue.char_end <= len(text)
+                     and text[issue.char_start:issue.char_end] == issue.target_text)
+            issue.location_status = "exact" if exact else "unverified"
+            if not exact:
+                issue.confidence = "C"
+                issue.char_start = issue.char_end = -1
+            elif ProtectedContentDetector.is_protected(issue.char_start, issue.char_end, protected):
+                continue
+            else:
+                issue.snippet = text[max(0, issue.char_start-18):min(len(text), issue.char_end+18)]
+        elif issue.confidence == "A":
+            issue.confidence = "B"
+        if issue.rule_id in {"comparative_space", "ye_space", "latin_punct", "repeated_word", "EN_SVA"}:
+            issue.confidence = "B"
+        if issue.rule_id == "mi_prefix":
+            following = text[issue.char_start:]
+            if not re.match(r"ن?می[ \u00a0]*(?:" + MI_STEMS + r")(?:م|ی|د|یم|ید|ند|ت|تم|تی|تیم|تید|تند|ه)?(?![" + FA + r"])", following):
+                issue.confidence = "C"
+        if issue.confidence != "C" or not rules.get("strict", True):
+            result.append(issue)
+    return deduplicate_issues(result)
+
+
+@bounded_findings
+def _check_text(par_index, text, loc, rules, in_refs=False, in_declaration=False):
+    out = FindingBuffer(rules.get("max_findings_per_block", 500))
     if not text.strip():
         return out
+
+    # استخراج محدوده‌های محافظت‌شده علمی (فرمول‌ها، یکاها، مواد شیمیایی، DOI، آمار و ارجاعات)
+    prot_spans = ProtectedContentDetector.find_spans(text)
 
     # تایپوگرافی عمومی
     for rule, sev, rx, msg in TEXT_RULES:
         if rule in ("arabic_digits", "arabic_letters") or has_fa(text):
             for m in rx.finditer(text):
+                # اگر با محدوده علمی محافظت‌شده تداخل داشته باشد، قاعده اعمال نشود
+                if ProtectedContentDetector.is_protected(m.start(), m.end(), prot_spans):
+                    continue
+
                 # فیلتر استثناهای علمی ارقام لاتین (واحدها، درصدها، شاخص‌های آماری)
                 if rule == "latin_digits":
                     after_pos = m.end()
@@ -428,69 +532,166 @@ def check_text(par_index, text, loc, rules, in_refs=False, in_declaration=False)
                     snippet = text[max(0, m.start() - 3):min(len(text), m.end() + 3)]
                     if ABBR_EXEMPT_RE.search(snippet):
                         continue
-                out.append(Issue(rule, sev, msg, loc, snippet_of(text, m), par_index, target_text=m.group(0)))
+
+                conf = ConfidenceLevel.HIGH_A.value
+                if rule in ("straight_quotes", "leading_space"):
+                    conf = ConfidenceLevel.REVIEW_B.value
+
+                cat = RULE_CATEGORIES.get(rule, "۱. غلط املایی و تایپوگرافی")
+                out.append(Issue(
+                    rule_id=rule,
+                    severity=sev,
+                    message=msg,
+                    loc=loc,
+                    snippet=snippet_of(text, m),
+                    par_index=par_index,
+                    suggestion="",
+                    target_text=m.group(0),
+                    category=cat,
+                    confidence=conf,
+                    char_start=m.start(),
+                    char_end=m.end()
+                ))
 
     # بررسی تکرار واژه با تفکیک واژگان تکرارشدنی مجاز (مانند کم‌کم یا ذره‌ذره)
     if has_fa(text):
         for m in REPEATED_WORD_RE.finditer(text):
+            if ProtectedContentDetector.is_protected(m.start(), m.end(), prot_spans):
+                continue
             w = m.group(1)
+            cat = RULE_CATEGORIES.get("repeated_word", "۱. غلط املایی و تایپوگرافی")
             if w in REDUPLICATION_WORDS:
-                out.append(Issue("repeated_word", "info",
-                                 f"تکرار واژه «{w} {w}»؛ برای ساختار ترکیبی بهتر است با نیم‌فاصله پیوند داده شود: «{w}‌{w}».",
-                                 loc, snippet_of(text, m), par_index, suggestion=f"{w}‌{w}", target_text=m.group(0)))
+                out.append(Issue(
+                    rule_id="repeated_word",
+                    severity="info",
+                    message=f"تکرار واژه «{w} {w}»؛ برای ساختار ترکیبی بهتر است با نیم‌فاصله پیوند داده شود: «{w}‌{w}».",
+                    loc=loc,
+                    snippet=snippet_of(text, m),
+                    par_index=par_index,
+                    suggestion=f"{w}‌{w}",
+                    target_text=m.group(0),
+                    category=cat,
+                    confidence=ConfidenceLevel.REVIEW_B.value,
+                    char_start=m.start(),
+                    char_end=m.end()
+                ))
             else:
-                out.append(Issue("repeated_word", "warn",
-                                 f"تکرار ناخواسته واژه «{w}» پشت‌سرهم؛ واژه دوم اضافی است.",
-                                 loc, snippet_of(text, m), par_index, suggestion=w, target_text=m.group(0)))
+                out.append(Issue(
+                    rule_id="repeated_word",
+                    severity="warn",
+                    message=f"تکرار ناخواسته واژه «{w}» پشت‌سرهم؛ واژه دوم اضافی است.",
+                    loc=loc,
+                    snippet=snippet_of(text, m),
+                    par_index=par_index,
+                    suggestion=w,
+                    target_text=m.group(0),
+                    category=cat,
+                    confidence=ConfidenceLevel.HIGH_A.value,
+                    char_start=m.start(),
+                    char_end=m.end()
+                ))
 
     # بررسی انگلیسی در صورت وجود متن انگلیسی در پاراگراف
     en_words = [w for w in text.split() if LATIN_RE.match(w)]
     if len(en_words) >= 3:
-        en_issues = en_checker.check_english_text(text, loc)
+        en_issues = en_checker.check_english_text(text, loc, par_index=par_index)
         for ei in en_issues:
-            out.append(Issue(ei.rule, ei.severity, ei.message, ei.loc, ei.snippet, par_index, ei.suggestion, target_text=ei.target_text))
+            out.append(ei)
 
     if not has_fa(text):
         return out
 
-    t = text.replace("ي", "ی").replace("ك", "ک")
+    # نگاشتار مطمئن تحلیلی برای غلط‌های املایی رایج
+    mapper = OffsetMapper.create_normalized(text)
+    t = mapper.normalized_text
+
     for wrong, right in rules.get("common_mistakes", {}).items():
         rx = _word_re(wrong)
         for m in rx.finditer(t):
-            out.append(Issue("common_mistake", "error", f"«{wrong}» ← «{right}»", loc,
-                             snippet_of(t, m), par_index, right, target_text=m.group(0)))
+            orig_s, orig_e, ok = mapper.map_slice_to_original(m.start(), m.end())
+            if ok and ProtectedContentDetector.is_protected(orig_s, orig_e, prot_spans):
+                continue
+            matched_orig = text[orig_s:orig_e] if ok else m.group(0)
+            out.append(Issue(
+                rule_id="common_mistake",
+                severity="error",
+                message=f"«{wrong}» ← پیشنهاد اصلاح: «{right}»",
+                loc=loc,
+                snippet=snippet_of(text, m),
+                par_index=par_index,
+                suggestion=right,
+                target_text=matched_orig,
+                category=RULE_CATEGORIES.get("common_mistake", "۱. غلط املایی و تایپوگرافی"),
+                confidence=ConfidenceLevel.HIGH_A.value,
+                char_start=orig_s if ok else -1,
+                char_end=orig_e if ok else -1
+            ))
+
     if in_refs:
         return out
 
     # واژگان محاوره‌ای
     for w in rules.get("informal_words", []):
         for m in _word_re(w).finditer(t):
-            out.append(Issue("informal_word", "info",
-                             f"«{w}» محاوره‌ای است؛ معادل رسمی بنویسید.", loc, snippet_of(t, m), par_index, target_text=m.group(0)))
+            orig_s, orig_e, ok = mapper.map_slice_to_original(m.start(), m.end())
+            if ok and ProtectedContentDetector.is_protected(orig_s, orig_e, prot_spans):
+                continue
+            matched_orig = text[orig_s:orig_e] if ok else m.group(0)
+            out.append(Issue(
+                rule_id="informal_word",
+                severity="info",
+                message=f"«{w}» محاوره‌ای است؛ معادل رسمی و آکادمیک بنویسید.",
+                loc=loc,
+                snippet=snippet_of(text, m),
+                par_index=par_index,
+                suggestion="معادل رسمی آکادمیک",
+                target_text=matched_orig,
+                category=RULE_CATEGORIES.get("informal_word", "۴. سبک و لحن علمی"),
+                confidence=ConfidenceLevel.REVIEW_B.value,
+                char_start=orig_s if ok else -1,
+                char_end=orig_e if ok else -1
+            ))
 
     # بررسی سبک علمی و مبالغه (ماژول تخصصی academic_checker)
-    acad_issues = academic_checker.check_academic_style(text, loc, in_declaration)
+    acad_issues = academic_checker.check_academic_style(text, loc, in_declaration, par_index=par_index)
     for ai in acad_issues:
-        out.append(Issue(ai.rule, ai.severity, ai.message, ai.loc, ai.snippet, par_index, ai.suggestion, target_text=ai.target_text))
+        out.append(ai)
 
     lim = rules.get("limits", {})
     n_words = len(words(text))
     if n_words > lim.get("max_paragraph_words", 300):
-        out.append(Issue("long_paragraph", "info",
-                         f"پاراگراف {n_words} کلمه دارد؛ بهتر است برای خوانایی شکسته شود.", loc, text[:60] + "…", par_index))
+        out.append(Issue(
+            rule_id="long_paragraph",
+            severity="info",
+            message=f"پاراگراف {n_words} کلمه دارد؛ بهتر است برای خوانایی و انتقال بهتر پیام شکسته شود.",
+            loc=loc,
+            snippet=text[:60] + "…",
+            par_index=par_index,
+            category=RULE_CATEGORIES.get("long_paragraph", "۵. انسجام و ساختار فصول"),
+            confidence=ConfidenceLevel.REVIEW_B.value
+        ))
+
     for sent in re.split(r"[\.؟!؛\?]\s", text):
         if len(words(sent)) > lim.get("max_sentence_words", 60):
-            out.append(Issue("long_sentence", "info",
-                             f"جمله‌ای با {len(words(sent))} کلمه؛ برای خوانایی و درک ساده‌تر کوتاه‌تر شود.", loc,
-                             sent[:60] + "…", par_index))
+            out.append(Issue(
+                rule_id="long_sentence",
+                severity="info",
+                message=f"جمله‌ای با {len(words(sent))} کلمه؛ برای درک ساده‌تر کوتاه‌تر شود.",
+                loc=loc,
+                snippet=sent[:60] + "…",
+                par_index=par_index,
+                category=RULE_CATEGORIES.get("long_sentence", "۵. انسجام و ساختار فصول"),
+                confidence=ConfidenceLevel.REVIEW_B.value
+            ))
     return out
 
 
 # ----------------------------------------------------------------------------
 # بررسی صفحه‌آرایی و استایل‌ها
 # ----------------------------------------------------------------------------
+@bounded_findings
 def check_page(doc, rules, mode="thesis"):
-    out = []
+    out = FindingBuffer()
     cfg = rules["page"]
     tol, mtol = cfg["size_tolerance_cm"], cfg["margin_tolerance_cm"]
     for i, s in enumerate(doc.sections, 1):
@@ -504,6 +705,8 @@ def check_page(doc, rules, mode="thesis"):
         for side, attr in (("top", "top_margin"), ("bottom", "bottom_margin"),
                            ("right", "right_margin"), ("left", "left_margin")):
             v = getattr(s, attr)
+            if mode == "tums":
+                continue
             if v is None:
                 continue
             cm, want = v / 360000, cfg["margins_cm"][side]
@@ -516,13 +719,14 @@ def check_page(doc, rules, mode="thesis"):
     if mode == "tums":
         tums_issues = tums_checker.check_tums_margins(doc.sections)
         for ti in tums_issues:
-            out.append(Issue(ti.rule, ti.severity, ti.message, ti.loc, ti.snippet))
+            out.append(ti)
 
     return out
 
 
+@bounded_findings
 def check_body_format(doc, rules, ctx):
-    out = []
+    out = FindingBuffer()
     b = rules["body"]
     for i, p, heading in ctx:
         text = p.text
@@ -585,8 +789,9 @@ def check_body_format(doc, rules, ctx):
     return out
 
 
+@bounded_findings
 def check_fields(doc):
-    out = []
+    out = FindingBuffer()
     instr = " ".join(e.text or "" for e in doc.element.body.iter(qn("w:instrText")))
     has_toc = "TOC" in instr
     if not has_toc:
@@ -594,15 +799,17 @@ def check_fields(doc):
                          "فهرست مطالب خودکار (References ▸ Table of Contents) پیدا نشد؛ اگر فهرست را دستی "
                          "نوشته‌اید، شماره‌صفحه‌ها با ویرایش به‌هم می‌خورد."))
     has_page = False
-    for s in doc.sections:
-        for part in (s.footer, s.header):
-            try:
-                x = part._element
-            except Exception:
-                continue
-            if any("PAGE" in (e.text or "") for e in x.iter(qn("w:instrText"))) or \
-               any("PAGE" in (e.get(qn("w:instr")) or "") for e in x.iter(qn("w:fldSimple"))):
-                has_page = True
+    for relationship in doc.part.rels.values():
+        if relationship.is_external or not relationship.reltype.endswith(("/header", "/footer")):
+            continue
+        part = relationship.target_part
+        x = getattr(part, "_element", None)
+        if x is None:
+            continue
+        field_texts = [e.text or "" for e in x.iter(qn("w:instrText"))]
+        field_texts += [e.get(qn("w:instr")) or "" for e in x.iter(qn("w:fldSimple"))]
+        if any(value.strip().split() and value.strip().split()[0].upper() == "PAGE" for value in field_texts):
+            has_page = True
     if not has_page:
         out.append(Issue("page_numbers", "warn", "شماره‌ی صفحه‌ی خودکار در سربرگ/پانویس پیدا نشد."))
     return out
@@ -627,8 +834,9 @@ def find_section(paragraphs, patterns):
     return None
 
 
+@bounded_findings
 def check_structure(doc, rules, mode, stats):
-    out = []
+    out = FindingBuffer()
     ps = doc.paragraphs
     m = rules["modes"].get(mode, rules["modes"].get("thesis", {}))
 
@@ -644,7 +852,7 @@ def check_structure(doc, rules, mode, stats):
         checklist_status, tums_issues = tums_checker.check_tums_checklist(ps)
         stats["tums_checklist"] = checklist_status
         for ti in tums_issues:
-            out.append(Issue(ti.rule, ti.severity, ti.message, ti.loc, ti.snippet))
+            out.append(ti)
 
     # فصل‌ها و واژگان هر فصل
     nums, unstyled = [], []
@@ -671,7 +879,7 @@ def check_structure(doc, rules, mode, stats):
         total_w = stats.get("words", 0)
         prop_issues = tums_checker.check_tums_chapter_proportions(ch_words, total_w)
         for pi in prop_issues:
-            out.append(Issue(pi.rule, pi.severity, pi.message, pi.loc, pi.snippet))
+            out.append(pi)
 
     if mode in ("thesis", "tums"):
         min_ch = rules.get("limits", {}).get("min_chapters_thesis", 5 if mode == "tums" else 3)
@@ -748,7 +956,7 @@ AFTER_REFS_HEAD = [
     "declaration", "فرم تعهد", "سپاسگزاری"
 ]
 CITE_RE = re.compile(r"\(([^()\n]{2,90}?)[،,]\s*([0-9۰-۹]{4})[a-z]?(?:\s*[،,;؛][^()\n]{0,40})?\)")
-NUM_CITE_RE = re.compile(r"\[([0-9۰-۹]+(?:\s*[-–,،]\s*[0-9۰-۹]+)*)\]")
+NUM_CITE_RE = re.compile(r"\[([0-9٠-٩۰-۹]+(?:\s*[-–,،]\s*[0-9٠-٩۰-۹]+)*)\]")
 
 
 def first_surname(s):
@@ -758,79 +966,132 @@ def first_surname(s):
 
 
 def check_citations(doc, rules, mode="thesis"):
-    out = []
-    ps = doc.paragraphs
-    ref_i = None
-    for i in range(len(ps) - 1, -1, -1):
-        t = norm(ps[i].text)
-        if t and len(t.split()) <= 4 and any(t == norm(h) or t.startswith(norm(h)) for h in REF_HEAD):
-            ref_i = i
+    from rule_registry import FindingBudgetExceeded
+    try:
+        return _check_citations(doc, rules, mode)
+    except FindingBudgetExceeded as error:
+        reference_index = next((i for i, p in enumerate(doc.paragraphs)
+                                if any(norm(p.text) == norm(h) for h in REF_HEAD)), None)
+        return error.findings + [Issue("findings_limit", "warn", "بررسی ارجاعات به سقف یافته‌ها رسید؛ بازبینی دستی لازم است.",
+                                      confidence="B", extraction_status="analysis_limited")], reference_index
+
+
+def _check_citations(doc, rules, mode="thesis"):
+    """Separate candidate extraction, conservative matching, and review findings."""
+    out, ref_i = FindingBuffer(), None
+    paragraphs = doc.paragraphs
+    for index in range(len(paragraphs)-1, -1, -1):
+        text = norm(paragraphs[index].text)
+        if any(text == norm(h) for h in REF_HEAD):
+            ref_i = index
             break
     if ref_i is None:
         return out, None
-
     refs = []
-    for p in ps[ref_i + 1:]:
-        t_clean = norm(p.text)
-        if not t_clean:
-            continue
-        # اگر به سرفصل پیوست‌ها یا بخش‌های پس از منابع رسیدیم، شمارش مراجع را متوقف کن
-        if len(p.text.split()) <= 5 and any(t_clean == norm(h) or t_clean.startswith(norm(h)) for h in AFTER_REFS_HEAD):
+    for index in range(ref_i+1,len(paragraphs)):
+        text=paragraphs[index].text
+        if any(norm(text)==norm(h) for h in AFTER_REFS_HEAD):
             break
-        if len(p.text.strip()) > 15:
-            refs.append(p.text.strip())
+        if text.strip():
+            refs.append((index,text))
+    if mode=="tums":
+        out.extend(tums_checker.check_tums_references([text for _,text in refs]))
 
-    body_text = "\n".join(p.text for p in ps[:ref_i])
-    refs_norm = [to_latin_digits(norm(r)) for r in refs]
+    normalized=[to_latin_digits(norm(text)) for _,text in refs]
+    author_index = defaultdict(list)
+    for reference_index, reference in enumerate(normalized):
+        year_match = re.search(r"(?<![0-9])[0-9]{4}[a-z]?(?![0-9a-z])", reference)
+        if year_match:
+            author_tokens = set(re.findall(r"[\w\u200c'-]+", reference[:year_match.start()]))
+            for author_token in author_tokens:
+                author_index[(author_token, year_match.group())].append(reference_index)
+    labels=[]
+    for text in normalized:
+        match=re.match(r"^\s*(?:\[(\d+)\]|(\d+)[.)])\s*",text)
+        labels.append(int(match.group(1) or match.group(2)) if match else None)
+    numbered=bool(labels) and all(n is not None for n in labels) and len(set(labels))==len(labels)
+    author_year=re.compile(r"([^;؛()]+?)[,،]\s*([0-9٠-٩۰-۹]{4}[a-z]?)",re.IGNORECASE)
+    narrative=re.compile(r"([A-Z][A-Za-z-]+(?:\s+et\s+al\.?)?)\s*\(([0-9٠-٩۰-۹]{4}[a-z]?)\)")
+    for index,paragraph in enumerate(paragraphs[:ref_i]):
+        text=paragraph.text
+        candidates=[]
+        for bracket in re.finditer(r"\([^()]*\)",text):
+            for match in author_year.finditer(bracket.group()):
+                candidates.append((match.group(1),match.group(2),
+                                   bracket.start()+match.start(),bracket.start()+match.end()))
+        for match in narrative.finditer(text):
+            candidates.append((match.group(1),match.group(2),match.start(),match.end()))
+        for author,year,left,right in candidates:
+            surname=first_surname(author)
+            year=to_latin_digits(year).lower()
+            hits = author_index.get((surname, year), [])
+            if len(hits)==1:
+                continue
+            rule="cite_ambiguous_ref" if hits else "cite_missing_ref"
+            reason=("Multiple bibliography candidates; manual disambiguation required."
+                    if hits else "No author/year candidate found in extracted references; review spelling, year suffix and bibliography structure.")
+            out.append(Issue(rule,"warn",reason,f"Paragraph {index+1}",text[left:right],index,
+                target_text=text[left:right],category="citation_consistency",
+                confidence="C" if hits else "B",char_start=left,char_end=right,location_status="exact"))
+        for match in NUM_CITE_RE.finditer(text):
+            values=set()
+            valid=True
+            for item in re.split(r"[,،]",to_latin_digits(match.group(1))):
+                bounds=re.split(r"[-–]",item)
+                first,last=int(bounds[0]),int(bounds[-1])
+                if first<=0 or last<first or last-first>1000:
+                    valid=False
+                    break
+                values.update(range(first,last+1))
+            if not valid:
+                out.append(Issue("numeric_cite_ambiguous","info","Unreliable numeric range; manual review required.",
+                                 f"Paragraph {index+1}",match.group(),index,confidence="C"))
+                continue
+            missing=values-set(labels) if numbered else {v for v in values if v>len(refs)}
+            if missing and refs:
+                out.append(Issue("numeric_cite","warn",
+                    f"No extracted reference candidate for numbers {sorted(missing)}; bibliography numbering must be checked.",
+                    f"Paragraph {index+1}",match.group(),index,target_text=match.group(),
+                    category="citation_consistency",confidence="B",char_start=match.start(),
+                    char_end=match.end(),location_status="exact"))
+    return deduplicate_issues(out),ref_i
 
-    # ارزیابی ضوابط مراجع دانشگاه علوم پزشکی تهران
-    if mode == "tums":
-        tums_ref_issues = tums_checker.check_tums_references(refs)
-        for tri in tums_ref_issues:
-            out.append(Issue(tri.rule, tri.severity, tri.message, tri.loc, tri.snippet))
 
+# ----------------------------------------------------------------------------
+# ابزار یکپارچه‌سازی و رفع تکرار ایرادها
+# ----------------------------------------------------------------------------
+def deduplicate_issues(issues: List[Issue]) -> List[Issue]:
+    """حذف هشدارهای تکراری یا همپوشان در یک محل واحد."""
     seen = set()
-    cited = set()
-    for m in CITE_RE.finditer(body_text):
-        sur = first_surname(m.group(1))
-        year = to_latin_digits(m.group(2))
-        if not sur or (sur, year) in seen:
+    deduped = []
+    for it in issues:
+        key = (it.block_id, it.source_part, it.loc, it.par_index, it.char_start, it.char_end,
+               it.rule_id, it.target_text, it.message, it.suggestion)
+        if key in seen:
             continue
-        seen.add((sur, year))
-        hit = [k for k, r in enumerate(refs_norm) if sur in r and year in r]
-        if hit:
-            cited.update(hit)
-        else:
-            out.append(Issue("cite_missing_ref", "error",
-                             f"ارجاع «{m.group(0)}» در فهرست منابع پیدا نشد.", "", m.group(0)))
-    if seen:
-        for k, r in enumerate(refs):
-            if k not in cited:
-                out.append(Issue("ref_not_cited", "warn", "این منبع در متن ارجاع داده نشده است.", "فهرست منابع", r[:70]))
-    # ارجاع عددی
-    nums = set()
-    for m in NUM_CITE_RE.finditer(body_text):
-        for tok in re.split(r"[,،]", to_latin_digits(m.group(1))):
-            parts = re.split(r"[-–]", tok)
-            for x in parts:
-                x_str = x.strip()
-                if x_str.isdigit():
-                    val = int(x_str)
-                    if val > 0:  # مراجع از ۱ آغاز می‌شوند؛ فیلتر اعداد غیرمرتبط یا بازه‌های ریاضی
-                        nums.add(val)
-    if nums and refs and max(nums) > len(refs):
-        out.append(Issue("numeric_cite", "error",
-                         f"ارجاع [{max(nums)}] در متن هست ولی فهرست منابع فقط {len(refs)} مورد دارد."))
-    return out, ref_i
+        seen.add(key)
+        deduped.append(it)
+    return deduped
 
 
 # ----------------------------------------------------------------------------
 # اجرای کامل روی Word (DOCX)
 # ----------------------------------------------------------------------------
+@immutable_input
 def analyze(path, mode="thesis", rules=None):
-    rules = rules or load_rules(mode=mode)
+    from document_blocks import extract_document_blocks
+    started = time.monotonic()
+    rules = _prepare_rules(rules, mode)
+    validate_document(path, "docx", rules.get("max_input_bytes", 25 * 1024 * 1024))
+    pre_hash = sha256_file(path)
     doc = Document(path)
-    issues, stats = [], {"mode": mode}
+    doc._review_source_path = os.path.abspath(path)
+    doc._review_source_hash = pre_hash
+    blocks = extract_document_blocks(doc, max_blocks=rules.get("max_document_blocks", 25000),
+                                     max_total_chars=rules.get("max_document_chars", 4_000_000))
+    body_blocks = {block.paragraph_index: block for block in blocks
+                   if block.story == "body" and block.paragraph_index >= 0}
+    issues, stats = [], {"mode": mode, "file_sha256": pre_hash}
 
     heading = "ابتدای سند"
     ctx = []
@@ -848,78 +1109,182 @@ def analyze(path, mode="thesis", rules=None):
     cit_issues, ref_i = check_citations(doc, rules, mode=mode)
 
     blank_run = 0
+    analyzed_blocks = set()
+    findings_budget = rules.get("max_findings", 10000)
     for i, p, h in ctx:
-        text = p.text
+        block = body_blocks.get(i)
+        text = block.text if block is not None else p.text
         if is_toc_style(p):
             continue
+        if len(issues) >= findings_budget:
+            break
         if not text.strip() and not p._p.xpath(".//w:drawing") and not p._p.xpath(".//w:br[@w:type='page']"):
             blank_run += 1
             if blank_run == 3:
                 issues.append(Issue("blank_lines", "warn",
                                     "چند پاراگراف خالی پشت‌سرهم؛ برای فاصله از Spacing پاراگراف یا Page Break استفاده کنید.",
-                                    f"زیر «{h}»، پاراگراف {i + 1}", "", i))
+                                    f"زیر «{h}»، پاراگراف {i + 1}", "", i,
+                                    category="۳. نشانه‌گذاری و فاصله‌گذاری",
+                                    confidence=ConfidenceLevel.REVIEW_B.value))
             continue
         blank_run = 0
         in_refs = ref_i is not None and i > ref_i
         in_decl = any(kw in h.lower() for kw in ["تعهد", "اصالت", "سپاس", "تقدیم", "declaration"])
-        issues += check_text(i, text, f"زیر «{h}»، پاراگراف {i + 1}", rules, in_refs, in_declaration=in_decl)
+        found = check_text(i, text, f"زیر «{h}»، پاراگراف {i + 1}", rules, in_refs, in_declaration=in_decl)
+        issues += _attach_block_issues(found, block) if block is not None else found
+        if block is not None:
+            analyzed_blocks.add(block.block_id)
+
+    # بررسی و استخراج متن جدول‌ها (Tables Extraction)
+    table_cells_count = 0
+    for block in blocks:
+        if block.story == "body" and block.paragraph_index >= 0:
+            continue
+        if not block.text.strip():
+            continue
+        if len(issues) >= findings_budget:
+            break
+        if block.story == "table":
+            table_cells_count += 1
+        found = check_text(-1, block.text, block.location, rules)
+        issues += _attach_block_issues(found, block)
+        analyzed_blocks.add(block.block_id)
+    stats["tables"] = len(doc.tables)
+    stats["table_cells_analyzed"] = table_cells_count
 
     # ارزیابی انسجام پاراگراف‌ها
     cohesion_issues = academic_checker.evaluate_cohesion(paragraphs_texts)
     for ci in cohesion_issues:
-        issues.append(Issue(ci.rule, ci.severity, ci.message, ci.loc, ci.snippet))
+        issues.append(ci)
 
     issues += check_page(doc, rules, mode=mode)
     issues += check_body_format(doc, rules, ctx)
     issues += check_fields(doc)
     issues += check_structure(doc, rules, mode, stats)
     issues += cit_issues
-    return doc, issues, stats
+
+    # راستی‌آزمایی عدم تغییر فایل ورودی در پایان پردازش
+    post_hash = sha256_file(path)
+    if pre_hash != post_hash:
+        raise RuntimeError("نقض اصل تمامیت داده: فایل اصلی ورودی در حین پردازش تغییر کرده است!")
+
+    for issue in issues:
+        if issue.confidence == "A" and issue.location_status != "exact":
+            issue.confidence = "B"
+    stats["coverage_limits"] = [
+        "متن جدول‌های تو‌در‌تو، سرصفحه/پاصفحه، یادداشت‌ها و متن‌کادرهای قابل استخراج بررسی شده است؛ فرمول‌ها و تغییرات ردگیری‌شده بررسی کامل ندارند.",
+        "شمارهٔ صفحهٔ Word از شمارهٔ پاراگراف قابل استنتاج نیست.",
+        "تطبیق ارجاعات محتاطانه است و محتوای علمی منابع را تأیید نمی‌کند.",
+        "نسخه و تاریخ همهٔ بندهای پروفایل دانشگاهی مستقلاً تأیید نشده است."
+    ]
+    stats["body_words"] = stats["words"]
+    stats["words"] = sum(len(words(block.text)) for block in blocks)
+    stats["block_count"] = len(blocks)
+    stats["source_chars"] = sum(len(block.text) for block in blocks)
+    stats["story_counts"] = dict(Counter(block.story for block in blocks))
+    stats["partial_blocks"] = sum(block.extraction_status != "native" for block in blocks)
+    if len(issues) >= findings_budget:
+        stats["skipped_blocks"] = sum(bool(block.text.strip()) and block.block_id not in analyzed_blocks for block in blocks)
+        issues.append(Issue("findings_limit", "warn", "بودجهٔ یافته‌ها تکمیل شد؛ همهٔ بلوک‌های متن بررسی نشده‌اند.",
+                            confidence="B", extraction_status="analysis_limited"))
+    stats["protected_content_audit"] = _protected_audit(blocks, rules.get("max_analysis_block_chars", 200000))
+    return doc, _finish_analysis(issues, stats, started, rules), stats
 
 
 # ----------------------------------------------------------------------------
 # اجرای بررسی روی فایل PDF
 # ----------------------------------------------------------------------------
+@immutable_input
 def analyze_pdf(pdf_path, mode="thesis", rules=None):
     """تحلیل و استخراج متنی فایل PDF متناسب با اصول بند ۲ و ۱۰."""
-    rules = rules or load_rules(mode=mode)
-    extracted = pdf_handler.extract_pdf_content(pdf_path)
-    issues, stats = [], {"mode": mode, "is_pdf": True}
+    started = time.monotonic()
+    rules = _prepare_rules(rules, mode)
+    validate_document(pdf_path, "pdf", rules.get("max_input_bytes", 25 * 1024 * 1024))
+    pre_hash = sha256_file(pdf_path)
+    extracted = pdf_handler.extract_pdf_content(pdf_path, max_pages=rules.get("max_pdf_pages", 1000),
+                                               max_chars=rules.get("max_document_chars", 4_000_000),
+                                               max_blocks=rules.get("max_document_blocks", 25000))
+    issues, stats = [], {"mode": mode, "is_pdf": True, "file_sha256": pre_hash}
 
     if not extracted.get("ok"):
-        issues.append(Issue("pdf_read_error", "error", extracted.get("error", "خطا در خواندن فایل PDF")))
-        return None, issues, stats
+        issues.append(Issue("pdf_read_error", "error", extracted.get("error", "خطا در خواندن فایل PDF"),
+                            confidence=ConfidenceLevel.HIGH_A.value))
+        return None, _finish_analysis(issues, stats, started, rules), stats
 
-    if extracted.get("is_scanned"):
+    if extracted.get("no_text_document", extracted.get("is_scanned")):
         issues.append(Issue("pdf_scanned_warning", "warn",
-                            "این فایل PDF اسکن‌شده یا تصویرمحور است و فاقد لایه متنی استاندارد می‌باشد. طبق اصل ۱۰، استخراج متن با اطمینان کافی نیازمند سامانه OCR است و نمی‌توان درباره بخش‌های ناخوانا نظر قطعی داد."))
-        stats["is_scanned"] = True
-        return None, issues, stats
+                            "متن قابل استخراج این PDF کم است؛ احتمال تصویرمحور بودن یا استخراج ناقص وجود دارد. طبق اصل ۱۰، استخراج متن با اطمینان کافی نیازمند سامانه OCR است و نمی‌توان درباره بخش‌های ناخوانا نظر قطعی داد.",
+                            confidence=ConfidenceLevel.REVIEW_B.value))
+        stats["is_scanned"] = extracted.get("is_scanned", False)
+        stats["total_pages"] = extracted.get("total_pages", 0)
+        stats["extraction_pages"] = [{"page": p["page_num"], "quality": p["quality"], "warnings": p["quality_warnings"]}
+                                      for p in extracted.get("pages", [])]
+        return None, _finish_analysis(issues, stats, started, rules), stats
 
     all_paragraphs = []
     total_words = 0
     par_idx = 0
+    stats["skipped_blocks"] = 0
 
     for p_info in extracted.get("pages", []):
         p_num = p_info["page_num"]
-        for par_text in p_info["paragraphs"]:
+        if p_info.get("quality") in {"image_only", "no_text"}:
+            issues.append(Issue("pdf_page_unreadable", "warn", "متن قابل‌اعتماد این صفحه استخراج نشد؛ بررسی دستی یا OCR لازم است.",
+                                f"صفحه {p_num}", confidence="B", extraction_status="no_reliable_text",
+                                page_index=p_num - 1, story="pdf"))
+        elif p_info.get("quality_warnings"):
+            issues.append(Issue("pdf_extraction_review", "info", "ترتیب خواندن یا نویسه‌های استخراج‌شدهٔ این صفحه نیازمند بازبینی است.",
+                                f"صفحه {p_num}", confidence="B", extraction_status="pdf_text_unverified",
+                                page_index=p_num - 1, story="pdf"))
+        for block in p_info.get("blocks", []):
+            par_text = block["text"]
             all_paragraphs.append(par_text)
             w_cnt = len(words(par_text))
             total_words += w_cnt
             loc = f"صفحه {p_num}، پاراگراف {par_idx + 1}"
-            issues += check_text(par_idx, par_text, loc, rules)
+            if len(issues) >= rules.get("max_findings", 10000):
+                stats["skipped_blocks"] += 1
+                par_idx += 1
+                continue
+            found = check_text(-1, par_text, loc, rules)
+            for issue in found:
+                issue.block_id = block["block_id"]
+                issue.source_part = f"pdf/page/{p_num}"
+                issue.story = "pdf"
+                issue.page_index = p_num - 1
+                issue.paragraph_index = par_idx
+            issues += found
             par_idx += 1
 
     stats["paragraphs"] = len(all_paragraphs)
+    if stats["skipped_blocks"]:
+        issues.append(Issue("findings_limit", "warn", "بودجهٔ یافته‌ها تکمیل شد؛ بعضی بلوک‌های PDF بررسی نشده‌اند.",
+                            confidence="B", extraction_status="analysis_limited"))
     stats["words"] = total_words
     stats["total_pages"] = extracted.get("total_pages", 0)
+    stats["block_count"] = par_idx
+    stats["source_chars"] = extracted.get("total_chars", 0)
+    stats["protected_content_audit"] = _protected_audit(all_paragraphs, rules.get("max_analysis_block_chars", 200000))
+    stats["extraction_pages"] = [{"page": p["page_num"], "quality": p["quality"], "warnings": p["quality_warnings"]}
+                                  for p in extracted.get("pages", [])]
 
     # ارزیابی انسجام
     cohesion_issues = academic_checker.evaluate_cohesion(all_paragraphs)
     for ci in cohesion_issues:
-        issues.append(Issue(ci.rule, ci.severity, ci.message, ci.loc, ci.snippet))
+        issues.append(ci)
 
-    return None, issues, stats
+    # راستی‌آزمایی عدم تغییر فایل اصلی PDF
+    post_hash = sha256_file(pdf_path)
+    if pre_hash != post_hash:
+        raise RuntimeError("نقض اصل تمامیت داده: فایل اصلی PDF تغییر یافته است!")
+
+    for issue in issues:
+        if issue.extraction_status == "native":
+            issue.extraction_status = "pdf_reading_order_unverified"
+        if issue.confidence == "A":
+            issue.confidence = "B"
+    stats["coverage_limits"] = ["ترتیب ستون‌ها و صحت نمادهای PDF مستقلاً تأیید نشده است؛ OCR انجام نشده و هر صفحه جداگانه ارزیابی می‌شود."]
+    return None, _finish_analysis(issues, stats, started, rules), stats
 
 
 # ----------------------------------------------------------------------------
@@ -927,38 +1292,63 @@ def analyze_pdf(pdf_path, mode="thesis", rules=None):
 # ----------------------------------------------------------------------------
 def analyze_text(raw_text, mode="thesis", rules=None):
     """بررسی متن مستقیم وارد شده در چت بله."""
-    rules = rules or load_rules(mode=mode)
+    started = time.monotonic()
+    rules = _prepare_rules(rules, mode)
+    if len(raw_text) > rules.get("max_document_chars", 4_000_000):
+        raise ValueError("Text exceeds its document analysis budget")
     issues, stats = [], {"mode": mode, "is_raw_text": True}
-    paragraphs = [p.strip() for p in raw_text.split("\n\n") if p.strip()]
+    paragraphs = [p for p in raw_text.split("\n\n") if p.strip()]
+    if len(paragraphs) > rules.get("max_document_blocks", 25000):
+        raise ValueError("Text exceeds its block analysis budget")
 
     stats["paragraphs"] = len(paragraphs)
     stats["words"] = len(words(raw_text))
 
+    stats["skipped_blocks"] = 0
     for i, p in enumerate(paragraphs):
+        if len(issues) >= rules.get("max_findings", 10000):
+            stats["skipped_blocks"] += 1
+            continue
         loc = f"پاراگراف {i + 1}"
-        issues += check_text(i, p, loc, rules)
+        found = check_text(i, p, loc, rules)
+        for issue in found:
+            issue.block_id = f"text:p{i+1}"
+            issue.story = "text"
+            issue.paragraph_index = i
+        issues += found
+
+    if stats["skipped_blocks"]:
+        issues.append(Issue("findings_limit", "warn", "بودجهٔ یافته‌ها تکمیل شد؛ بعضی بلوک‌ها بررسی نشده‌اند.",
+                            confidence="B", extraction_status="analysis_limited"))
 
     cohesion_issues = academic_checker.evaluate_cohesion(paragraphs)
     for ci in cohesion_issues:
-        issues.append(Issue(ci.rule, ci.severity, ci.message, ci.loc, ci.snippet))
+        issues.append(ci)
 
-    return None, issues, stats
+    stats["block_count"] = len(paragraphs)
+    stats["source_chars"] = len(raw_text)
+    stats["analysis_text_sha256"] = hashlib.sha256(raw_text.encode("utf-8")).hexdigest()
+    stats["protected_content_audit"] = _protected_audit(paragraphs, rules.get("max_analysis_block_chars", 200000))
+    return None, _finish_analysis(issues, stats, started, rules), stats
 
 
 # ----------------------------------------------------------------------------
-# تولید گزارش کامل و ساختاریافته (منطبق بر بخش ۱۶ دستورالعمل)
+# تولید گزارش جامع و تفکیک‌شده (بر پایه سطوح قطعیت و شواهد قطعی)
 # ----------------------------------------------------------------------------
 def build_report(issues, stats, rules, examples=1000):
+    hidden_ambiguous = sum(i.confidence == "C" for i in issues)
+    issues = [i for i in issues if i.confidence != "C" or not rules.get("strict", True)]
     mode_key = stats.get("mode", "thesis")
     mode_title = rules.get("modes", {}).get(mode_key, {}).get("title", mode_key)
     if mode_key == "tums":
         mode_title = "پایان‌نامه دانشگاه علوم پزشکی تهران (TUMS)"
 
     sev_count = Counter(it.severity for it in issues)
+    conf_count = Counter(getattr(it, "confidence", "A") for it in issues)
 
     lines = [
         "══════════════════════════════════════════════════════════════",
-        "  سامانه جامع ویراستار پژوهش — گزارش ارزیابی علمی و نگارشی",
+        "  سامانه جامع ویراستار پژوهش — گزارش ارزیابی علمی، ممیزی و نگارشی",
         "══════════════════════════════════════════════════════════════",
         "",
         "الف) خلاصه ارزیابی و مشخصات سند",
@@ -966,14 +1356,23 @@ def build_report(issues, stats, rules, examples=1000):
         f"• شیوه نامه / الگوی انتخابی: {mode_title}",
         f"• تعداد پاراگراف‌ها: {stats.get('paragraphs', 0)} | تعداد کلمات: {stats.get('words', 0)}",
     ]
+    if hidden_ambiguous and rules.get("strict", True):
+        lines.append(f"• موارد مبهم حذف‌شده از فهرست خطاها: {hidden_ambiguous}؛ بررسی دستی لازم است.")
     if "total_pages" in stats:
         lines.append(f"• تعداد صفحات PDF: {stats['total_pages']}")
     if "tables" in stats or "images" in stats:
-        lines.append(f"• تعداد جدول‌ها: {stats.get('tables', 0)} | تعداد تصاویر: {stats.get('images', 0)}")
+        t_cells = stats.get('table_cells_analyzed', 0)
+        lines.append(f"• تعداد جدول‌ها: {stats.get('tables', 0)} (سلول‌های بررسی‌شده: {t_cells}) | تعداد تصاویر: {stats.get('images', 0)}")
+    for limitation in stats.get("coverage_limits", []):
+        lines.append("• محدودیت بررسی: " + limitation)
+    if "file_sha256" in stats:
+        lines.append(f"• شناسه امنیتی یکپارچگی (SHA-256): {stats['file_sha256'][:16]}…")
+
     lines += [
-        f"• شاخص خطاها: {SEVERITY_ICON['error']} {sev_count['error']} خطای قطعی  |  "
+        f"• شاخص شدت خطاها: {SEVERITY_ICON['error']} {sev_count['error']} مورد گزارش‌شده  |  "
         f"{SEVERITY_ICON['warn']} {sev_count['warn']} هشدار/اصلاحی  |  "
         f"{SEVERITY_ICON['info']} {sev_count['info']} پیشنهاد بهبود",
+        f"• سطوح قطعیت ممیزی: 【سطح A - اطمینان بالا】: {conf_count['A']}  |  【سطح B - نیازمند بررسی】: {conf_count['B']}  |  【سطح C - احتمالی】: {conf_count['C']}",
         "",
         "ب) دسته‌بندی تفکیک‌شده ایرادها",
         "──────────────────────────────────────────────────────────────",
@@ -982,8 +1381,8 @@ def build_report(issues, stats, rules, examples=1000):
     # گروه‌بندی بر اساس دسته‌بندی‌های استاندارد
     cat_groups = defaultdict(list)
     for it in issues:
-        cat = RULE_CATEGORIES.get(it.rule, "سایر موارد")
-        cat_groups[cat].append(it)
+        cat = getattr(it, "category", "") or RULE_CATEGORIES.get(it.rule_id, "سایر موارد")
+        cat_groups[f"سطح {it.confidence} / {cat}"].append(it)
 
     for cat_name, cat_issues in sorted(cat_groups.items()):
         lines.append(f"📌 {cat_name}: {len(cat_issues)} مورد")
@@ -1000,7 +1399,7 @@ def build_report(issues, stats, rules, examples=1000):
 
     lines += [
         "",
-        "د) جزئیات ایرادها و پیشنهادهای اصلاحی",
+        "د) جزئیات ایرادها و پیشنهادهای اصلاحی (تفکیک سطح قطعیت)",
         "──────────────────────────────────────────────────────────────",
     ]
 
@@ -1011,8 +1410,9 @@ def build_report(issues, stats, rules, examples=1000):
         for cat_name, cat_issues in sorted(cat_groups.items()):
             lines.append(f"\n【 {cat_name} 】")
             for it in cat_issues[:examples]:
-                rule_name = RULE_TITLES.get(it.rule, it.rule)
-                row = f"[{issue_counter}] {SEVERITY_ICON[it.severity]} {rule_name}"
+                rule_name = RULE_TITLES.get(it.rule_id, it.rule_id)
+                conf_badge = f"【سطح {getattr(it, 'confidence', 'A')}】"
+                row = f"[{issue_counter}] {SEVERITY_ICON.get(it.severity, 'ℹ️')} {it.rule_id} {conf_badge} — {rule_name}"
                 if it.loc:
                     row += f"\n    📍 محل: {it.loc}"
                 row += f"\n    📝 شرح: {it.message}"
@@ -1025,39 +1425,44 @@ def build_report(issues, stats, rules, examples=1000):
 
     lines += [
         "",
-        "هـ) جمع‌بندی و یادآوری‌های اخلاقی و پژوهشی",
+        "هـ) تعهدنامه حفاظت از داده و راهنمای پژوهشگر",
         "──────────────────────────────────────────────────────────────",
-        "۱. مطابق اصول ویرایش علمی، معنای داده‌ها، فرمول‌ها و نام‌ها بدون بازبینی تغییر نکرده است.",
-        "۲. میان خطای قطعی و پیشنهادهای سبکی تفکیک شده است؛ پیشنهادهای بهبود نیازمند تأیید نهایی نویسنده هستند.",
-        "۳. شیوه نامه رسمی دانشگاه یا نشریه مرجع نهایی ارزیابی است.",
+        "۱. مطابق اصل تغییرناپذیری، فایل اصلی کاربر صرفاً خوانده شده و در مسیر تحلیل برای ذخیره‌سازی باز نمی‌شود و کنترل هش برای ورودی فایل فعال است.",
+        "۲. هیچ ویرایش خودکاری روی فرمول‌ها، یکاها، ارقام، نام‌های خاص و جدول‌ها صورت نگرفته است.",
+        "۳. پیشنهادات سطح B و C صرفاً جنبه مشورتی داشته و تصمیم نهایی با نویسنده و استاد راهنما است.",
         "══════════════════════════════════════════════════════════════"
     ]
+    lines.append("محدودیت‌ها: بررسی قاعده‌محور تأیید صحت علمی نیست؛ فرمول‌ها، تغییرات ردگیری‌شده و ترتیب خواندن PDF نیازمند بازبینی انسانی‌اند.")
     return "\n".join(lines)
 
 
 def build_summary(issues, stats, rules):
     """خلاصه‌ی پیام چت در پیام‌رسان بله."""
+    issues = [i for i in issues if i.confidence != "C" or not rules.get("strict", True)]
     mode_key = stats.get("mode", "thesis")
     mode_title = rules.get("modes", {}).get(mode_key, {}).get("title", mode_key)
     if mode_key == "tums":
         mode_title = "دانشگاه علوم پزشکی تهران (TUMS)"
 
     sev = Counter(it.severity for it in issues)
+    conf = Counter(getattr(it, "confidence", "A") for it in issues)
     lines = [
         f"📄 بررسی «{mode_title}» به پایان رسید",
-        f"📊 {stats.get('paragraphs', 0)} پاراگراف · {stats.get('words', 0)} کلمه",
-        f"{SEVERITY_ICON['error']} {sev['error']} خطای قطعی  ·  {SEVERITY_ICON['warn']} {sev['warn']} هشدار  ·  {SEVERITY_ICON['info']} {sev['info']} پیشنهاد بهبود",
+        f"📊 {stats.get('paragraphs', 0)} پاراگراف · {stats.get('words', 0)} کلمه" +
+        (f" · {stats.get('tables', 0)} جدول" if stats.get("tables") else ""),
+        f"{SEVERITY_ICON['error']} {sev['error']} مورد گزارش‌شده  ·  {SEVERITY_ICON['warn']} {sev['warn']} هشدار  ·  {SEVERITY_ICON['info']} {sev['info']} پیشنهاد",
+        f"🎯 شاخص قطعیت: {conf['A']} با اطمینان بالا (سطح A)  ·  {conf['B']} نیازمند بررسی (سطح B)",
         "",
     ]
     # دسته‌بندی ایرادها
-    cat_counts = Counter(RULE_CATEGORIES.get(it.rule, "سایر موارد") for it in issues)
+    cat_counts = Counter(getattr(it, "category", "") or RULE_CATEGORIES.get(it.rule_id, "سایر موارد") for it in issues)
     for cat, cnt in cat_counts.most_common(5):
         lines.append(f"• {cat}: {cnt} مورد")
 
     if not issues:
-        lines.append("✅ هیچ موردی یافت نشد؛ متن منطبق بر اصول ارزیابی‌شده است.")
+        lines.append("✅ هیچ خطای نگارشی یافت نشد؛ این نتیجه تأیید صحت علمی متن نیست.")
     else:
-        lines.append("\n📋 گزارش کامل همراه با جزئیات دقیق ارسال شد.")
+        lines.append("\n📋 جزئیات در گزارش متنی موجود است؛ خروجی Word فقط در صورت درخواست تولید می‌شود.")
     return "\n".join(lines)
 
 
@@ -1078,101 +1483,13 @@ def split_message(text, limit=3800):
 
 def annotate(doc, issues, out_path, max_comments=250, per_par=4):
     """
-    ذخیره‌ی نسخه‌ی کامنت‌گذاری‌شده‌ی فایل کاربر در Word.
-    قاعده اساسی: به هیچ عنوان به متن اصلی دست زده نمی‌شود (حفظ ۱۰۰٪ نویسه‌ها و فاصله‌ها).
-    کلمات یا عبارات دارای ایراد با رنگ زرد (Yellow Highlight) مشخص شده و کامنت تفصیلی به آن‌ها متصل می‌شود.
+    ذخیره‌ی نسخه‌ی کامنت‌گذاری‌شده‌ی فایل کاربر در Word با موتور ایمن safe_annotator.
+    قاعده اساسی: به هیچ عنوان به متن اصلی دست زده نمی‌شود (حفظ ۱۰۰٪ نویسه‌ها و استایل‌ها).
     """
-    if doc is None or not hasattr(doc, "add_comment"):
-        return False
-    by_par = defaultdict(list)
-    for it in sorted(issues, key=lambda x: SEVERITY_ORDER[x.severity]):
-        if it.par_index >= 0:
-            by_par[it.par_index].append(it)
-    done = 0
-    for idx in sorted(by_par):
-        if done >= max_comments:
-            break
-        if idx >= len(doc.paragraphs):
-            continue
-        p = doc.paragraphs[idx]
-        if not p.text.strip():
-            continue
-
-        seen = set()
-        for it in by_par[idx]:
-            if done >= max_comments:
-                break
-            key = (it.rule, it.message, it.target_text)
-            if key in seen:
-                continue
-            seen.add(key)
-
-            lines = [f"{SEVERITY_ICON[it.severity]} {RULE_TITLES.get(it.rule, it.rule)}: {it.message}"]
-            if it.suggestion:
-                lines.append(f"💡 پیشنهاد اصلاح: {it.suggestion}")
-            comment_text = "\n".join(lines)
-
-            target = it.target_text.strip() if it.target_text else ""
-            target_run = None
-
-            # اگر کلمه یا عبارت مشخصی هدف باشد و در متن وجود داشته باشد
-            if target and target in p.text:
-                for r in list(p.runs):
-                    if target in r.text:
-                        t = r.text
-                        s_idx = t.find(target)
-                        e_idx = s_idx + len(target)
-                        before = t[:s_idx]
-                        after = t[e_idx:]
-
-                        # تبدیل r به بخش قبل، و اضافه کردن target هایلایت‌شده و after بدون تغییر هیچ حرفی
-                        r.text = before
-
-                        t_run = p.add_run(target)
-                        if r._r.rPr is not None:
-                            t_run._r.append(copy.deepcopy(r._r.rPr))
-                        t_run.font.highlight_color = WD_COLOR_INDEX.YELLOW
-
-                        a_run = p.add_run(after)
-                        if r._r.rPr is not None:
-                            a_run._r.append(copy.deepcopy(r._r.rPr))
-
-                        p_elm = p._p
-                        r_elm = r._r
-                        r_pos = p_elm.index(r_elm)
-                        p_elm.insert(r_pos + 1, t_run._r)
-                        p_elm.insert(r_pos + 2, a_run._r)
-
-                        target_run = t_run
-                        break
-
-            if target_run is None:
-                non_empty = [r for r in p.runs if r.text.strip()]
-                if non_empty:
-                    target_run = non_empty[0]
-
-            if target_run is not None:
-                try:
-                    doc.add_comment(runs=target_run, text=comment_text, author="ویراستار پژوهش", initials="وپ")
-                    done += 1
-                except Exception:
-                    continue
-
-    doc.save(out_path)
-    return done > 0
+    return safe_annotator.annotate_document(doc, issues, out_path, max_comments=max_comments, per_par=per_par)
 
 
 if __name__ == "__main__":
-    ap = argparse.ArgumentParser()
-    ap.add_argument("file")
-    ap.add_argument("--mode", choices=["thesis", "tums", "article", "english"], default="thesis")
-    ap.add_argument("--annotate", help="مسیر خروجی docx کامنت‌گذاری‌شده")
-    a = ap.parse_args()
-    R = load_rules(mode=a.mode)
-    if a.file.lower().endswith(".pdf"):
-        d, iss, st = analyze_pdf(a.file, a.mode, R)
-    else:
-        d, iss, st = analyze(a.file, a.mode, R)
-    print(build_report(iss, st, R))
-    if a.annotate and d is not None:
-        print("annotated:", annotate(d, iss, a.annotate))
+    import sys
+    from review_cli import main
+    raise SystemExit(main(engine=sys.modules[__name__]))

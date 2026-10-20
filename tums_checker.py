@@ -2,23 +2,20 @@
 """
 ماژول ارزیابی تخصصی بر اساس شیوه نامه دانشگاه علوم پزشکی تهران (TUMS Thesis Guideline Checker).
 منطبق بر فایل ۴۹ صفحه‌ای «دستورالعمل نگارش پایان‌نامه مقاطع تحصیلات تکمیلی دانشگاه علوم پزشکی تهران».
+شامل:
+- چک‌لیست ۲۷ جزء الزامی پایان‌نامه (صفحات ۴۵ تا ۴۹)
+- نسبت و توازن فصول ۱ و ۲ (حداکثر ۳۰٪ حجم کل)
+- استانداردهای فهرست منابع و استناد (ممنوعیت et al و همکاران)
+- حاشیه‌ها و تنظیمات صفحه‌آرایی تخصصی
 """
 import json
 import os
 import re
-from dataclasses import dataclass
 from typing import Dict, List, Tuple
 
-HERE = os.path.dirname(os.path.abspath(__file__))
+from analysis_model import ConfidenceLevel, Issue
 
-@dataclass
-class TUMSIssue:
-    rule: str
-    severity: str  # error, warn, info
-    message: str
-    loc: str = ""
-    snippet: str = ""
-    ref_page: str = ""
+HERE = os.path.dirname(os.path.abspath(__file__))
 
 
 def load_tums_profile():
@@ -29,11 +26,11 @@ def load_tums_profile():
         return json.load(f)
 
 
-def check_tums_checklist(doc_paragraphs) -> Tuple[List[Dict], List[TUMSIssue]]:
+def check_tums_checklist(doc_paragraphs) -> Tuple[List[Dict], List[Issue]]:
     """بررسی ۲۷ جزء الزامی و پیشنهادی طبق چک‌لیست صفحات ۴۵ تا ۴۹ دستورالعمل دانشگاه علوم پزشکی تهران."""
     profile = load_tums_profile()
     checklist = profile.get("checklist_items", [])
-    issues = []
+    issues: List[Issue] = []
     status_list = []
 
     full_text_lower = " ".join(p.text.lower() for p in doc_paragraphs)
@@ -62,11 +59,13 @@ def check_tums_checklist(doc_paragraphs) -> Tuple[List[Dict], List[TUMSIssue]]:
         else:
             if is_required:
                 status = "یافت نشد ❌"
-                issues.append(TUMSIssue(
-                    rule="tums_checklist_missing",
-                    severity="error",
-                    message=f"بخش الزامی «{name}» در پایان‌نامه یافت نشد (طبق پیوست‌های شیوه نامه دانشگاه علوم پزشکی تهران).",
-                    ref_page="صفحات ۸ و ۴۵ تا ۴۹ دستورالعمل"
+                issues.append(Issue(
+                    rule_id="TUMS_CHECKLIST_MISSING",
+                    category="tums_guideline",
+                    severity="warn",
+                    confidence=ConfidenceLevel.REVIEW_B.value,
+                    message=f"بخش الزامی «{name}» در پایان‌نامه یافت نشد (طبق پیوست‌های شیوه نامه دانشگاه علوم پزشکی تهران، ص ۴۵-۴۹).",
+                    loc="چک‌لیست TUMS"
                 ))
             else:
                 status = "اختیاری / یافت نشد ℹ️"
@@ -75,12 +74,12 @@ def check_tums_checklist(doc_paragraphs) -> Tuple[List[Dict], List[TUMSIssue]]:
     return status_list, issues
 
 
-def check_tums_chapter_proportions(chapters_words: Dict[int, int], total_words: int) -> List[TUMSIssue]:
+def check_tums_chapter_proportions(chapters_words: Dict[int, int], total_words: int) -> List[Issue]:
     """
     بررسی قاعده صریح صفحه ۷ دستورالعمل:
     «فصول ۱ و ۲ باید حداکثر ۳۰٪ از کل متن پایان‌نامه باشد.»
     """
-    issues = []
+    issues: List[Issue] = []
     if total_words < 1000:
         return issues
 
@@ -89,83 +88,77 @@ def check_tums_chapter_proportions(chapters_words: Dict[int, int], total_words: 
     intro_review_words = ch1_words + ch2_words
 
     share = intro_review_words / total_words
-    if share > 0.30:
+    maximum = load_tums_profile().get("tums_special_rules", {}).get("max_intro_review_pct", 30)
+    if not isinstance(maximum, (int, float)) or not 0 < maximum <= 100:
+        return issues
+    if share > maximum / 100:
         pct = int(share * 100)
-        issues.append(TUMSIssue(
-            rule="tums_chapter_proportions",
+        issues.append(Issue(
+            rule_id="TUMS_CHAPTER_PROPORTIONS",
+            category="tums_guideline",
             severity="warn",
-            message=f"حجم فصول ۱ و ۲ برابر با {pct}٪ کل پایان‌نامه است؛ طبق صفحه ۷ دستورالعمل دانشگاه علوم پزشکی تهران، فصول ۱ و ۲ (مقدمه و بررسی متون) حداکثر باید ۳۰٪ از کل متن باشند.",
-            ref_page="صفحه ۷ دستورالعمل"
+            confidence=ConfidenceLevel.REVIEW_B.value,
+            message=f"حجم فصول ۱ و ۲ برابر با {pct}٪ کل پایان‌نامه است؛ طبق صفحه ۷ دستورالعمل دانشگاه علوم پزشکی تهران، مجموع فصول ۱ و ۲ حداکثر مقدار تنظیم‌شده {maximum:g}٪ است؛ نسبت بر مبنای شمارش واژه برآورد شده و نیازمند بررسی انسانی است.",
+            loc="ساختار فصول"
         ))
 
     return issues
 
 
-def check_tums_references(refs: List[str]) -> List[TUMSIssue]:
+def check_tums_references(refs: List[str]) -> List[Issue]:
     """
     بررسی قواعد استناد دانشگاه علوم پزشکی تهران (صفحات ۲۲ و ۲۳ دستورالعمل):
     - ممنوعیت استفاده از «همکاران» و «et al» در بخش نویسندگان فهرست منابع
     - درج «ص» در منابع فارسی و «pp.» در منابع انگلیسی
     """
-    issues = []
+    issues: List[Issue] = []
     for i, ref in enumerate(refs, 1):
         # بررسی ممنوعیت واژه‌های همکاران و et al در نویسندگان
         if "همکاران" in ref or re.search(r"\bet\s+al\b", ref, re.IGNORECASE):
-            issues.append(TUMSIssue(
-                rule="tums_et_al_forbidden",
-                severity="error",
-                message=f"منبع {i}: استفاده از واژه‌های «همکاران» و «et al» در فهرست نویسندگان مراجع طبق صفحه ۲۳ شیوه نامه مجاز نیست؛ اسامی نویسندگان باید کامل درج شود.",
+            issues.append(Issue(
+                rule_id="TUMS_ET_AL_FORBIDDEN",
+                category="tums_guideline",
+                severity="warn",
+                confidence=ConfidenceLevel.REVIEW_B.value,
+                message=f"منبع {i}: استفاده از واژه‌های «همکاران» و «et al» در فهرست نویسندگان مراجع طبق صفحه ۲۳ شیوه نامه مجاز نیست؛ اسامی تمامی نویسندگان باید درج شود.",
                 loc=f"منبع شماره {i}",
                 snippet=ref[:70] + "…",
-                ref_page="صفحه ۲۳ دستورالعمل"
+                target_text="همکاران" if "همکاران" in ref else "et al"
             ))
 
         # بررسی ذکر ص یا pp برای شماره صفحات
         has_page = bool(re.search(r"(\bص\s*[۰-۹0-9]+|\bpp?\.\s*[0-9]+)", ref, re.IGNORECASE))
         if not has_page and len(ref.split()) > 7:
-            issues.append(TUMSIssue(
-                rule="tums_ref_page_format",
+            issues.append(Issue(
+                rule_id="TUMS_REF_PAGE_FORMAT",
+                category="tums_guideline",
                 severity="info",
-                message=f"منبع {i}: شماره صفحات منبع طبق الگو (پس از «ص» در فارسی یا «pp.» در انگلیسی) مشخص نشده است.",
+                confidence=ConfidenceLevel.REVIEW_B.value,
+                message=f"منبع {i}: شماره صفحات منبع طبق الگو (پس از «ص» در فارسی یا «pp.» در انگلیسی) مشخص نشده است (صفحه ۲۳ دستورالعمل).",
                 loc=f"منبع شماره {i}",
-                snippet=ref[:60] + "…",
-                ref_page="صفحه ۲۳ دستورالعمل"
+                snippet=ref[:60] + "…"
             ))
 
     return issues
 
 
-def check_tums_margins(sections) -> List[TUMSIssue]:
-    """
-    بررسی ضوابط چاپ دورو و حاشیه‌های دانشگاه علوم پزشکی تهران (صفحه ۹ دستورالعمل):
-    - حاشیه صفحات فرد: راست ۳.۵cm، چپ ۲.۵cm، بالا ۲.۵cm، پایین ۲.۵cm
-    - حاشیه صفحات زوج: راست ۲.۵cm، چپ ۳.۵cm، بالا ۲.۵cm، پایین ۲.۵cm
-    - حاشیه صفحات عنوان: بالا ۱۰cm، پایین ۱۰cm، راست ۳.۵cm، چپ ۲.۵cm
-    """
+def check_tums_margins(sections) -> List[Issue]:
+    """Compare declared section margins with all compatible local profile variants."""
+    profile = load_tums_profile()
+    cfg = profile.get("page", {})
+    variants = [cfg.get(name, {}) for name in ("margins_odd_cm", "margins_even_cm", "margins_chapter_title_cm")]
+    tolerance = cfg.get("margin_tolerance_cm", 0.3)
     issues = []
-    for i, s in enumerate(sections, 1):
-        if not hasattr(s, "top_margin") or s.top_margin is None:
-            continue
-        top = s.top_margin / 360000
-        bot = s.bottom_margin / 360000
-        right = s.right_margin / 360000
-        left = s.left_margin / 360000
-
-        # بررسی کلی محدوده حاشیه‌ها
-        if abs(top - 2.5) > 0.4 and abs(top - 10.0) > 0.5:
-            issues.append(TUMSIssue(
-                rule="tums_page_margin",
-                severity="warn",
-                message=f"بخش {i}: حاشیه بالا {top:.1f}cm است؛ طبق دستورالعمل TUMS باید ۲.۵cm (یا در صفحات عنوان فصل ۱۰cm) باشد.",
-                ref_page="صفحه ۹ دستورالعمل"
-            ))
-        if abs(bot - 2.5) > 0.4 and abs(bot - 10.0) > 0.5:
-            issues.append(TUMSIssue(
-                rule="tums_page_margin",
-                severity="warn",
-                message=f"بخش {i}: حاشیه پایین {bot:.1f}cm است؛ طبق دستورالعمل TUMS باید ۲.۵cm باشد.",
-                ref_page="صفحه ۹ دستورالعمل"
-            ))
-
+    for index, section in enumerate(sections, 1):
+        for side in ("top", "bottom", "left", "right"):
+            value = getattr(section, side + "_margin", None)
+            permitted = [v[side] for v in variants if side in v]
+            if value is None or not permitted:
+                continue
+            measured = value / 360000
+            if all(abs(measured - target) > tolerance for target in permitted):
+                issues.append(Issue("TUMS_PAGE_MARGIN", "warn",
+                    f"Section {index}: {side} margin is {measured:.2f} cm; local profile candidates: {permitted}. Review section/page role.",
+                    f"Section {index}", category="tums_guideline", confidence="B",
+                    rule_version=profile.get("profile_version", "1")))
     return issues
-

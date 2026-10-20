@@ -1,4 +1,4 @@
-name: Keep Render Bot Awake 24/7
+name: Render availability ping
 
 on:
   schedule:
@@ -6,10 +6,13 @@ on:
     - cron: '*/10 * * * *'
   workflow_dispatch:
 
+permissions:
+  contents: read
+
 jobs:
   ping:
     runs-on: ubuntu-latest
     steps:
       - name: Ping Render Web Service
         run: |
-          curl -s --max-time 30 https://virastar-thesis-bot.onrender.com || true
+          curl --fail --silent --show-error --output /dev/null --retry 2 --max-time 60 https://virastar-thesis-bot.onrender.com/health

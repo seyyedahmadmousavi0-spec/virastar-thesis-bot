@@ -1,0 +1,132 @@
+[
+  [
+    "دانشجویان در سالن کنفرانس می روند تا سخنرانی را گوش دهند.",
+    true,
+    "mi_prefix"
+  ],
+  [
+    "تحقيقات قبلي نشان داد كه اين روش كارآمد است.",
+    true,
+    "arabic_letters"
+  ],
+  [
+    "پژوهشگر بخاطر نبود بودجه از ادامه آزمایش منصرف شد.",
+    true,
+    "common_mistake"
+  ],
+  [
+    "تمام نمونه ها در دمای منفی بیست درجه نگهداری شدند.",
+    true,
+    "plural_space"
+  ],
+  [
+    "این روش بزرگ تر از حد انتظار پیچیده بود.",
+    true,
+    "comparative_space"
+  ],
+  [
+    "او یک مقاله علمی ،خواند و خلاصه کرد.",
+    true,
+    "space_before_punct"
+  ],
+  [
+    "نتایج اعلام شد.هیچ تفاوتی دیده نشد.",
+    true,
+    "no_space_after_punct"
+  ],
+  [
+    "او گفت: \"این یک نقل قول است\".",
+    true,
+    "straight_quotes"
+  ],
+  [
+    "نتایج حاصله به طرز معجزه‌آسایی فوق‌العاده عالی بود.",
+    true,
+    "ACAD_EMOTIONAL"
+  ],
+  [
+    "به نظر من این فرضیه کاملاً درست است.",
+    true,
+    "ACAD_FIRST_PERSON"
+  ],
+  [
+    "This is a honest mistake in the experiment.",
+    true,
+    "EN_ARTICLE"
+  ],
+  [
+    "The results depend of the environmental factors.",
+    true,
+    "EN_PREP"
+  ],
+  [
+    "These result indicate that the hypothesis was supported.",
+    true,
+    "EN_SVA"
+  ],
+  [
+    "In order to analyze the data, we used SPSS.",
+    true,
+    "EN_WORDINESS"
+  ],
+  [
+    "غلظت ماده دارویی 12.5 mg/dL و دمای گرمخانه 37 °C بود.",
+    false,
+    "no_false_positive"
+  ],
+  [
+    "محلول حاوی 50 mM نمک NaCl و آب مقطر H2O در بافر سنتز شد.",
+    false,
+    "no_false_positive"
+  ],
+  [
+    "تفاوت آماری معناداری میان دو گروه مشاهده شد (p < 0.05).",
+    false,
+    "no_false_positive"
+  ],
+  [
+    "یافته‌ها با ضریب اطمینان ۹۵٪ (95% CI [1.2, 3.4]) گزارش گردید.",
+    false,
+    "no_false_positive"
+  ],
+  [
+    "بر اساس بررسی اسمیت و همکاران (Smith et al., 2020) آزمایش انجام شد.",
+    false,
+    "no_false_positive"
+  ],
+  [
+    "داده‌های خام در پیوند https://doi.org/10.1016/j.cell.2021 بارگذاری شده است.",
+    false,
+    "no_false_positive"
+  ],
+  [
+    "پژوهشگر در این بررسی، داده‌ها را به دقت تحلیل می‌کند و شواهد نشان می‌دهد فرضیه تأیید شده است.",
+    false,
+    "no_false_positive"
+  ],
+  [
+    "غلظت محلول کم‌کم افزایش یافت و واکنش کامل شد.",
+    false,
+    "no_false_positive"
+  ],
+  [
+    "An MRI scan was performed on each participant.",
+    false,
+    "no_false_positive"
+  ],
+  [
+    "The university approved the experimental protocol.",
+    false,
+    "no_false_positive"
+  ],
+  [
+    "Data were collected over a period of six months.",
+    false,
+    "no_false_positive"
+  ],
+  [
+    "According to the established guidelines, the cells were incubated.",
+    false,
+    "no_false_positive"
+  ]
+]

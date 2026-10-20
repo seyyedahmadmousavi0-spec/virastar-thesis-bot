@@ -1,22 +1,21 @@
 # -*- coding: utf-8 -*-
 """
 ماژول بررسی و ویرایش متون علمی انگلیسی (English Academic Text Checker).
-شامل بررسی گرامر، اسپلینگ، نقطه‌گذاری، حروف اضافه، تطابق فاعل و فعل،
-لحن و سبک آکادمیک (Academic Tone)، حشو و عبارات نامناسب.
+شامل بررسی:
+- گرامر و تطابق فاعل و فعل (EN_SVA)
+- حروف تعریف a/an با در نظر گرفتن استثناهای آوایی (EN_ARTICLE)
+- حروف اضافه متداول علمی (EN_PREP)
+- نشانه‌گذاری و فاصله‌گذاری ایمن (EN_PUNCT)
+- لحن و سبک آکادمیک (EN_TONE)
+- حشو و زوائد در انگلیسی (EN_WORDINESS)
+- تقارن پرانتزها و براکت‌ها (EN_BRACKET)
 """
 import re
-from dataclasses import dataclass
 from typing import List
 
-@dataclass
-class EnglishIssue:
-    rule: str
-    severity: str  # error, warn, info
-    message: str
-    snippet: str = ""
-    loc: str = ""
-    suggestion: str = ""
-    target_text: str = ""
+from analysis_model import ConfidenceLevel, Issue
+from rule_registry import FindingBuffer, bounded_findings
+from protected_content import ProtectedContentDetector, quoted_spans
 
 # واژه‌ها و عبارات غیررسمی در نگارش آکادمیک انگلیسی و جایگزین‌های پیشنهادی
 INFORMAL_ACADEMIC_REPLACEMENTS = {
@@ -83,131 +82,224 @@ SVA_ERRORS = [
     (r"\b(these|those)\s+(result|datum|finding|study|method|effect)\b", "جمع اسم بعد از these/those", "کلمه پس از these/those باید جمع باشد (مانند these results)."),
     (r"\b(this|that)\s+(results|data|findings|studies|methods|effects)\b", "مفرد بعد از this/that", "کلمه پس از this/that باید مفرد باشد."),
     (r"\b(each|every)\s+([a-z]+s)\b", "اسم مفرد بعد از each/every", "بعد از each و every اسم به صورت مفرد می‌آید."),
-    (r"\bdata\s+is\b", "data are (در نگارش علمی سنتی)", "در بسیاری از شیوه‌نامه‌های پزشکی و علمی data جمع است (data are)."),
     (r"\bmany\s+(research|information|equipment)\b", "اسم غیرقابل شمارش با many", "کلماتی مانند research/information غیرقابل شمارش هستند؛ از much یا a great deal of استفاده کنید."),
 ]
 
-# خطاهای نقطه‌گذاری انگلیسی
+# قوانین نشانه‌گذاری انگلیسی
 PUNCTUATION_RULES = [
     (re.compile(r"\s+([,.:;?!])"), "فاصله قبل از علامت نگارشی نباید بیاید."),
     (re.compile(r"([,;:?!])(?=[A-Za-z])"), "بعد از علائم نگارشی باید یک فاصله قرار گیرد."),
-    (re.compile(r"\b([A-Za-z]+)\s+\1\b", re.IGNORECASE), "تکرار ناخواسته یک کلمه انگلیسی پشت‌سرهم."),
+    (re.compile(r"\b([A-Za-z]{2,})\s+\1\b", re.IGNORECASE), "تکرار ناخواسته یک کلمه انگلیسی پشت‌سرهم."),
 ]
 
 
-def check_english_text(text: str, loc: str = "") -> List[EnglishIssue]:
-    """بررسی کامل یک قطعه متن انگلیسی."""
-    issues = []
+def _tone_term_is_technical(pattern, match, text):
+    """Exclude a few explicit technical senses; this is not semantic parsing."""
+    term = match.group().lower()
+    tail = text[match.end():]
+    if term == "good" and re.match(r"\s+(?:agreement|fit|clinical|laboratory|manufacturing|practice)\b", tail, re.I):
+        return True
+    if term == "big" and re.match(r"\s+(?:data|bang|five)\b", tail, re.I):
+        return True
+    if term == "so" and re.match(r"\s+(?:that|far|much|many|as|to)\b", tail, re.I):
+        return True
+    if term == "till" and re.search(r"\bglacial\s+$", text[:match.start()], re.I):
+        return True
+    if term in {"kind of", "sort of"}:
+        return bool(re.search(r"\b(?:a|an|the|this|that|another|any|some|each|every|what)\s+(?:[A-Za-z]+\s+){0,2}$",
+                              text[max(0, match.start() - 40):match.start()], re.I))
+    return False
+
+
+def _expected_article(word):
+    """Return a known reading, or abstain for variable acronym pronunciations."""
+    lower = word.lower()
+    if re.match(r"^[A-Za-z]-", word):
+        return "an" if word[0].upper() in "AEFHILMNORSX" else "a"
+    if word.isupper():
+        if word in {"MRI", "RNA", "FDA", "HIV", "HTML", "ICU", "X"} or len(word) == 1 and word in "AEFHILMNORSX":
+            return "an"
+        if word in {"DNA", "CT", "PCR"}:
+            return "a"
+        return None
+    if lower.startswith(("honest", "honor", "honour", "heir")) or re.match(r"^hour(?:s|ly|glass|long)?$", lower) or lower.startswith("hour-"):
+        return "an"
+    if (lower in {"one", "once", "ewe"} or lower.startswith("one-")
+            or lower.startswith(("university", "uniform", "unique", "unit", "user", "useful", "usual",
+                                 "europe", "euro", "eulog", "euphem", "euphor", "eukary", "euclid", "ubiquit"))):
+        return "a"
+    if lower.startswith(("herb", "historic", "homage", "sql", "uni", "eu", "one")):
+        return None
+    return "an" if lower[0] in "aeiou" else "a"
+
+
+def _grammar_issue(text, match, loc, par_index, suggestion, confidence="A", message=""):
+    return Issue("EN_SVA", "error", message or "Review number agreement in this noun phrase.",
+                 loc, text[max(0, match.start() - 15):match.end() + 15], par_index,
+                 suggestion, match.group(), category="english_grammar", confidence=confidence,
+                 char_start=match.start(), char_end=match.end())
+
+
+@bounded_findings
+def check_english_text(text: str, loc: str = "", par_index: int = -1) -> List[Issue]:
+    """بررسی کامل یک قطعه متن انگلیسی با فیلتر دقیق استثناهای علمی."""
+    issues: List[Issue] = FindingBuffer()
     if not text or not text.strip():
         return issues
+
+    prot_spans = ProtectedContentDetector.find_spans(text) + quoted_spans(text)
 
     # ۱. بررسی نقطه‌گذاری
     for rx, msg in PUNCTUATION_RULES:
         for m in rx.finditer(text):
-            issues.append(EnglishIssue(
-                rule="en_punctuation",
+            if ProtectedContentDetector.is_protected(m.start(), m.end(), prot_spans):
+                continue
+            # Both sequences can be grammatical: "had had" and "that that".
+            if rx.groups > 0 and len(m.groups()) == 1 and re.fullmatch(r"(?:had\s+had|that\s+that)", m.group(), re.I):
+                continue
+            issues.append(Issue(
+                rule_id="EN_PUNCT",
+                category="english_style",
                 severity="warn",
+                confidence=ConfidenceLevel.HIGH_A.value,
                 message=msg,
-                snippet=text[max(0, m.start()-15):min(len(text), m.end()+15)],
                 loc=loc,
+                snippet=text[max(0, m.start() - 15):min(len(text), m.end() + 15)],
+                par_index=par_index,
+                char_start=m.start(),
+                char_end=m.end(),
                 target_text=m.group(0)
             ))
 
-    # ۲. بررسی حروف تعریف (Articles)
-    for rx, correct_art, msg in ARTICLE_ERRORS:
-        for m in rx.finditer(text):
-            # استثناهای فونتیک و اختصارات علمی زبان انگلیسی
-            word = m.group(2).lower()
-            a_exceptions = (
-                "university", "uniform", "unique", "european", "one", "user", "unit",
-                "universal", "usage", "useful", "useless", "usual", "ubiquitous",
-                "unilateral", "utopia", "eukaryotic", "eukaryote", "one-way", "once",
-                "ufo", "historic", "historical"
-            )
-            an_exceptions = (
-                "hour", "honest", "honor", "honorable", "honorary", "heir", "heiress",
-                "mri", "rna", "dna", "x-ray", "fda", "who", "nih", "icu", "ct", "pcr",
-                "hiv", "sd", "snp", "snps", "html", "sql", "suv", "sos"
-            )
-            if (correct_art == "an" and (word in a_exceptions or word.startswith("uni-") or word.startswith("euro-"))) or \
-               (correct_art == "a" and (word in an_exceptions or word.startswith("hour-"))):
-                continue
-            issues.append(EnglishIssue(
-                rule="en_article",
-                severity="error",
-                message=f"{msg} (اصلاح به «{correct_art} {m.group(2)}»)",
-                snippet=m.group(0),
-                loc=loc,
-                suggestion=f"{correct_art} {m.group(2)}",
-                target_text=m.group(0)
-            ))
+    # Pronunciation is lexicon-based; unknown initials and variable readings abstain.
+    for m in re.finditer(r"\b(a|an)\s+([A-Za-z][A-Za-z-]*)\b", text, re.IGNORECASE):
+        if ProtectedContentDetector.is_protected(m.start(1), m.end(1), prot_spans):
+            continue
+        word = m.group(2)
+        expected = _expected_article(word)
+        if expected and m.group(1).lower() != expected:
+            replacement = expected.capitalize() if m.group(1)[0].isupper() else expected
+            issues.append(Issue("EN_ARTICLE", "error",
+                f"Review the article before {word}: known pronunciation suggests {expected}.",
+                loc, m.group(), par_index, replacement, m.group(1),
+                category="english_grammar", char_start=m.start(1), char_end=m.end(1)))
 
     # ۳. بررسی واژگان محاوره‌ای آکادمیک (Informal Academic Tone)
     for pat, (rep, expl) in INFORMAL_ACADEMIC_REPLACEMENTS.items():
         rx = re.compile(pat, re.IGNORECASE)
         for m in rx.finditer(text):
-            issues.append(EnglishIssue(
-                rule="en_academic_tone",
+            if ProtectedContentDetector.is_protected(m.start(), m.end(), prot_spans):
+                continue
+            if _tone_term_is_technical(pat, m, text):
+                continue
+            issues.append(Issue(
+                rule_id="EN_TONE",
+                category="english_style",
                 severity="info",
-                message=f"سبک علمی: «{m.group(0)}» ← پیشنهاد: {rep}. {expl}",
-                snippet=text[max(0, m.start()-15):min(len(text), m.end()+15)],
+                confidence=ConfidenceLevel.REVIEW_B.value,
+                message=f"سبک علمی: «{m.group(0)}» — {expl}",
                 loc=loc,
-                suggestion=rep,
-                target_text=m.group(0)
+                snippet=text[max(0, m.start() - 15):min(len(text), m.end() + 15)],
+                par_index=par_index,
+                char_start=m.start(),
+                char_end=m.end(),
+                target_text=m.group(0),
+                suggestion=rep
             ))
 
     # ۴. بررسی حشو و پرگویی (Wordiness)
     for pat, (rep, expl) in WORDINESS_PATTERNS.items():
         rx = re.compile(pat, re.IGNORECASE)
         for m in rx.finditer(text):
-            issues.append(EnglishIssue(
-                rule="en_wordiness",
+            if ProtectedContentDetector.is_protected(m.start(), m.end(), prot_spans):
+                continue
+            issues.append(Issue(
+                rule_id="EN_WORDINESS",
+                category="english_style",
                 severity="info",
-                message=f"ساده‌نویسی علمی: «{m.group(0)}» ← {rep}. {expl}",
-                snippet=text[max(0, m.start()-15):min(len(text), m.end()+15)],
+                confidence=ConfidenceLevel.REVIEW_B.value,
+                message=f"ساده‌نویسی علمی: «{m.group(0)}» — {expl}",
                 loc=loc,
-                suggestion=rep,
-                target_text=m.group(0)
+                snippet=text[max(0, m.start() - 15):min(len(text), m.end() + 15)],
+                par_index=par_index,
+                char_start=m.start(),
+                char_end=m.end(),
+                target_text=m.group(0),
+                suggestion=rep
             ))
 
     # ۵. بررسی حروف اضافه (Prepositions)
     for pat, rep, expl in PREPOSITION_ERRORS:
+        if "consist in" in pat or "different than" in pat:
+            continue
         rx = re.compile(pat, re.IGNORECASE)
         for m in rx.finditer(text):
-            issues.append(EnglishIssue(
-                rule="en_preposition",
+            if ProtectedContentDetector.is_protected(m.start(), m.end(), prot_spans):
+                continue
+            issues.append(Issue(
+                rule_id="EN_PREP",
+                category="english_style",
                 severity="error",
-                message=f"کاربرد حرف اضافه: «{m.group(0)}» ← اصلاح: «{rep}». {expl}",
-                snippet=m.group(0),
+                confidence=ConfidenceLevel.HIGH_A.value,
+                message=f"حرف اضافه نادرست: «{m.group(0)}» ← پیشنهاد اصلاح: «{rep}». {expl}",
                 loc=loc,
-                suggestion=rep,
-                target_text=m.group(0)
+                snippet=text[max(0, m.start() - 15):min(len(text), m.end() + 15)],
+                par_index=par_index,
+                char_start=m.start(),
+                char_end=m.end(),
+                target_text=m.group(0),
+                suggestion=rep
             ))
 
-    # ۶. بررسی تطابق فاعل و فعل / شمارش اسامی (SVA / Plurality)
-    for pat, rep, expl in SVA_ERRORS:
-        rx = re.compile(pat, re.IGNORECASE)
-        for m in rx.finditer(text):
-            issues.append(EnglishIssue(
-                rule="en_grammar_agreement",
-                severity="warn",
-                message=f"تطابق دستوری: «{m.group(0)}» — {expl} (پیشنهاد: {rep})",
-                snippet=m.group(0),
-                loc=loc,
-                suggestion=rep,
-                target_text=m.group(0)
-            ))
+    # Finite local patterns avoid treating "these result from" as a noun error,
+    # or singular noun modifiers in "many research studies" as mass nouns.
+    noun_forms = {"result": "results", "datum": "data", "finding": "findings",
+                  "study": "studies", "method": "methods", "effect": "effects"}
+    nominal = r"\b(these|those)\s+(result|datum|finding|study|method|effect)\b(?=\s+(?:indicate|show|suggest|demonstrate|support|are|were|have|can|may)\b|\s*[,.;:!?]|\s*$)"
+    for m in re.finditer(nominal, text, re.I):
+        if not ProtectedContentDetector.is_protected(m.start(), m.end(), prot_spans):
+            suggestion = m.group(1) + " " + noun_forms[m.group(2).lower()]
+            issues.append(_grammar_issue(text, m, loc, par_index, suggestion, "B"))
 
-    # ۷. بررسی پرانتز و گیومه‌های جفت‌نشده در انگلیسی
-    open_p = text.count("(")
-    close_p = text.count(")")
-    if open_p != close_p:
-        issues.append(EnglishIssue(
-            rule="en_unpaired_brackets",
-            severity="warn",
-            message=f"عدم تقارن در پرانتزها: {open_p} پرانتز باز و {close_p} پرانتز بسته یافت شد.",
-            loc=loc
-        ))
+    for m in re.finditer(r"\bmany\s+(research|information|equipment)\b(?=\s+(?:is|was|are|were|has|have|can|could)\b|\s*[,.;:!?]|\s*$)", text, re.I):
+        if not ProtectedContentDetector.is_protected(m.start(), m.end(), prot_spans):
+            issues.append(_grammar_issue(text, m, loc, par_index, "much " + m.group(1), "B"))
+
+    finite_patterns = [
+        (r"\b(?:these|those)\s+(?:results|findings|studies|methods|effects)\s+(is|was|has)\b",
+         {"is": "are", "was": "were", "has": "have"}),
+        (r"\b(?:this|that)\s+(?:result|finding|study|method|effect)\s+(are|were|have)\b",
+         {"are": "is", "were": "was", "have": "has"}),
+    ]
+    for pattern, replacements in finite_patterns:
+        for m in re.finditer(pattern, text, re.I):
+            if ProtectedContentDetector.is_protected(m.start(), m.end(), prot_spans):
+                continue
+            original = m.group(1)
+            replacement = replacements[original.lower()]
+            if original[0].isupper():
+                replacement = replacement.capitalize()
+            issues.append(Issue("EN_SVA", "error", "Review the verb next to this explicit subject.",
+                                loc, m.group(), par_index, replacement, original,
+                                category="english_grammar", char_start=m.start(1), char_end=m.end(1)))
+
+    # A stack catches inverted/crossed delimiters that equal counts miss.
+    # Quotes, code, citations and numeric intervals already have their own syntax.
+    stack, unmatched = [], []
+    pairs = {")": "(", "]": "["}
+    for index, ch in enumerate(text):
+        if ch not in "()[]" or ProtectedContentDetector.is_protected(index, index + 1, prot_spans):
+            continue
+        if ch in "([":
+            stack.append((ch, index))
+        elif stack and stack[-1][0] == pairs[ch]:
+            stack.pop()
+        else:
+            unmatched.append(index)
+    unmatched.extend(index for _, index in stack)
+    for index in sorted(unmatched):
+        issues.append(Issue("EN_BRACKET", "warn", "Review the order or matching of this delimiter in context.",
+                            loc, text[max(0, index - 15):index + 16], par_index, target_text=text[index],
+                            category="english_style", confidence="B", char_start=index, char_end=index + 1))
 
     return issues
-

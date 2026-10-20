@@ -4,12 +4,21 @@ After=network.target
 
 [Service]
 Type=simple
-User=root
-WorkingDirectory=/root/bale-thesis-bot
-ExecStart=/usr/bin/python3 bot.py
+User=virastar
+Group=virastar
+WorkingDirectory=/opt/virastar
+EnvironmentFile=/etc/virastar/virastar.env
+ExecStart=/opt/virastar/.venv/bin/python bot.py
 Restart=always
 RestartSec=5
 Environment=PYTHONUNBUFFERED=1
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+UMask=0077
+TimeoutStopSec=150
+KillSignal=SIGINT
 
 [Install]
 WantedBy=multi-user.target

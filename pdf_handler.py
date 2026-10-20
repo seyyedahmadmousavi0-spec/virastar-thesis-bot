@@ -1,12 +1,5 @@
-# -*- coding: utf-8 -*-
-"""
-ماژول پردازش فایل‌های PDF (PDF Text Extractor & Analyzer).
-پشتیبانی از استخراج ساختاریافته متن از فایل‌های PDF، تشخیص فایل‌های اسکن‌شده (OCR-needed)،
-و اجرای تحلیل کامل نگارشی، علمی و ساختاری روی محتوای متنی PDF.
-"""
-import os
-from typing import Dict, List, Tuple
-
+"""Bounded, page-aware PDF extraction with source text preservation."""
+import unicodedata
 try:
     import pymupdf
 except ImportError:
@@ -15,64 +8,79 @@ except ImportError:
     except ImportError:
         pymupdf = None
 
+def normalize_presentation_forms_only(text):
+    """Comparison-only helper; extraction preserves original Unicode."""
+    return "".join(unicodedata.normalize("NFKC", c) if 0xFB50 <= ord(c) <= 0xFDFF or 0xFE70 <= ord(c) <= 0xFEFC else c for c in text)
 
-def extract_pdf_content(pdf_path: str) -> Dict:
-    """استخراج متن و صفحات از فایل PDF با تحلیل خوانایی."""
-    if pymupdf is None:
-        return {
-            "ok": False,
-            "error": "کتابخانه PyMuPDF نصب نیست.",
-            "is_scanned": False,
-            "pages": [],
-            "total_pages": 0
-        }
-
-    try:
-        doc = pymupdf.open(pdf_path)
-    except Exception as e:
-        return {
-            "ok": False,
-            "error": f"عدم امکان باز کردن فایل PDF: {e}",
-            "is_scanned": False,
-            "pages": [],
-            "total_pages": 0
-        }
-
-    import unicodedata
-
-    pages_text = []
-    total_chars = 0
-
-    for i, page in enumerate(doc):
-        raw_text = page.get_text("text") or ""
-        # نرمال‌سازی یونی‌کد (تبدیل Presentation Forms به حروف استاندارد فارسی)
-        text = unicodedata.normalize("NFKC", raw_text)
-        total_chars += len(text.strip())
-        
-        # استخراج پاراگراف‌ها با حفظ پیوستگی جملات
-        raw_paras = [p.strip() for p in text.split("\n\n") if p.strip()]
-        cleaned_paras = []
-        for p in raw_paras:
-            # یکپارچه‌سازی شکستگی خطوط درون یک پاراگراف
-            lines = [ln.strip() for ln in p.splitlines() if ln.strip()]
-            p_unified = " ".join(lines)
-            if p_unified:
-                cleaned_paras.append(p_unified)
-
-        pages_text.append({
-            "page_num": i + 1,
-            "text": text,
-            "paragraphs": cleaned_paras
-        })
-
-    # بررسی اسکن‌شده بودن فایل (اگر میانگین حروف هر صفحه کمتر از ۵۰ حرف باشد احتمالاً اسکن/تصویر است)
-    is_scanned = (total_chars / max(1, len(doc))) < 50
-
-    return {
-        "ok": True,
-        "total_pages": len(doc),
-        "total_chars": total_chars,
-        "is_scanned": is_scanned,
-        "pages": pages_text
+def _failure(code):
+    messages = {
+        "dependency": "PDF extraction dependency is unavailable.",
+        "encrypted": "Encrypted PDF requires an unlocked readable copy.",
+        "budget": "PDF exceeds its page or text extraction budget.",
+        "read_error": "Reliable PDF extraction failed; manual review is required.",
     }
+    return {"ok": False, "error_code": code, "error": messages[code], "is_scanned": False,
+            "pages": [], "total_pages": 0, "total_chars": 0}
 
+def extract_pdf_content(pdf_path, *, max_pages=1000, max_chars=4_000_000, max_blocks=25000):
+    if pymupdf is None:
+        return _failure("dependency")
+    if any(not isinstance(value, int) or isinstance(value, bool) or value <= 0 for value in (max_pages, max_chars, max_blocks)):
+        raise ValueError("Invalid PDF extraction budget")
+    try:
+        with pymupdf.open(pdf_path) as document:
+            if document.needs_pass:
+                return _failure("encrypted")
+            if len(document) > max_pages:
+                return _failure("budget")
+            pages, total_chars, total_blocks = [], 0, 0
+            for page_index, page in enumerate(document):
+                raw_text = page.get_text("text", sort=False) or ""
+                total_chars += len(raw_text)
+                if total_chars > max_chars:
+                    return _failure("budget")
+                image_count = len(page.get_images(full=True))
+                chars = len(raw_text.strip())
+                status = "text" if chars >= 50 else "short_text" if chars else "image_only" if image_count else "no_text"
+                warnings = []
+                if "\ufffd" in raw_text:
+                    warnings.append("replacement_characters")
+                if any(0xFB50 <= ord(c) <= 0xFDFF or 0xFE70 <= ord(c) <= 0xFEFC for c in raw_text):
+                    warnings.append("presentation_forms")
+                if status in {"image_only", "no_text"}:
+                    warnings.append("no_reliable_text")
+                blocks = []
+                for item in page.get_text("blocks", sort=False):
+                    if len(item) >= 7 and item[6] == 0 and item[4].strip():
+                        total_blocks += 1
+                        if total_blocks > max_blocks:
+                            return _failure("budget")
+                        blocks.append({"block_id": f"pdf:p{page_index+1}:b{len(blocks)+1}", "text": item[4],
+                                       "bbox": list(item[:4]), "page_index": page_index})
+                if not blocks and raw_text.strip():
+                    total_blocks += 1
+                    if total_blocks > max_blocks:
+                        return _failure("budget")
+                    blocks = [{"block_id": f"pdf:p{page_index+1}:b1", "text": raw_text, "bbox": None, "page_index": page_index}]
+                for left_index, left in enumerate(blocks):
+                    if not left["bbox"]:
+                        continue
+                    for right in blocks[left_index+1:]:
+                        if not right["bbox"]:
+                            continue
+                        a, b = left["bbox"], right["bbox"]
+                        if min(a[3], b[3]) > max(a[1], b[1]) and (a[2] + 12 < b[0] or b[2] + 12 < a[0]):
+                            warnings.append("possible_multiple_columns")
+                            break
+                    if "possible_multiple_columns" in warnings:
+                        break
+                pages.append({"page_num": page_index+1, "text": raw_text,
+                              "paragraphs": [block["text"] for block in blocks], "blocks": blocks,
+                              "quality": status, "quality_warnings": warnings,
+                              "image_count": image_count, "text_chars": chars})
+            no_text = not any(page["text_chars"] for page in pages)
+            return {"ok": True, "total_pages": len(document), "total_chars": total_chars,
+                    "no_text_document": no_text,
+                    "is_scanned": no_text and any(page["image_count"] for page in pages), "pages": pages}
+    except Exception:
+        return _failure("read_error")

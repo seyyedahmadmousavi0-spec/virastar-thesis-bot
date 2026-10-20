@@ -1,0 +1,26 @@
+﻿finding_id,rule_id,rule_version,category,confidence,loc,story,source_part,block_id,char_start,char_end,original_text,message,suggestion
+5b0124d5f3d42ca8dd52,EN_ARTICLE,2,english_grammar,A,زیر «Synthetic research review»، پاراگراف 3,body,/word/document.xml,bf37f18b60c229ddfae926ee,8,9,a,Review the article before honest: known pronunciation suggests an.,an
+46c68ffdcda518cfb11d,EN_SVA,2,english_grammar,B,زیر «Synthetic research review»، پاراگراف 3,body,/word/document.xml,bf37f18b60c229ddfae926ee,44,46,is,Review the verb next to this explicit subject.,are
+759e51d7117aad570c66,EN_SVA,2,english_grammar,B,body / table 1 / row 1 / cell 1 / paragraph 1,table,/word/document.xml,fd3d206c5c4d827a9f3e7de5,0,13,These finding,Review number agreement in this noun phrase.,These findings
+bd51091cb5b0e90dafe1,page_size,2,persian_orthography,B,بخش 1,,,,'-1,'-1,,بخش 1: اندازه‌ی صفحه 21.6×27.9 سانتی‌متر است؛ باید A4 (21.0×29.7) باشد.,
+0384a9478406c8f0e9a8,page_margin,2,persian_orthography,B,بخش 1,,,,'-1,'-1,,بخش 1: حاشیه‌ی بالا 2.54cm است؛ باید 3.0cm باشد.,
+b3180f7ffa5856448f94,page_margin,2,persian_orthography,B,بخش 1,,,,'-1,'-1,,بخش 1: حاشیه‌ی پایین 2.54cm است؛ باید 3.0cm باشد.,
+06c4ddf256ab2102163e,page_margin,2,persian_orthography,B,بخش 1,,,,'-1,'-1,,بخش 1: حاشیه‌ی راست 3.17cm است؛ باید 3.5cm باشد.,
+a11c285537d6b35fe8b6,page_margin,2,persian_orthography,B,بخش 1,,,,'-1,'-1,,بخش 1: حاشیه‌ی چپ 3.17cm است؛ باید 2.5cm باشد.,
+46ebfaeb638f1c67d07b,size_en,2,persian_orthography,B,زیر «Synthetic research review»، پاراگراف 2,,,,'-1,'-1,,یافت‌شده: 11 — مطلوب: 12,
+fb5c5deeb5ec4bbfbc3e,line_spacing,2,persian_orthography,B,زیر «Synthetic research review»، پاراگراف 2,,,,'-1,'-1,,فاصله‌ی خطوط 1.15 است؛ باید 1.5 باشد.,
+2762fc0f5694a5ed502f,size_en,2,persian_orthography,B,زیر «Synthetic research review»، پاراگراف 3,,,,'-1,'-1,,یافت‌شده: 11 — مطلوب: 12,
+91c6d72b53afb42327da,line_spacing,2,persian_orthography,B,زیر «Synthetic research review»، پاراگراف 3,,,,'-1,'-1,,فاصله‌ی خطوط 1.15 است؛ باید 1.5 باشد.,
+7e3eb862f0ce8d91b1ac,size_en,2,persian_orthography,B,زیر «Synthetic research review»، پاراگراف 4,,,,'-1,'-1,,یافت‌شده: 11 — مطلوب: 12,
+96780db0bd224a633e77,line_spacing,2,persian_orthography,B,زیر «Synthetic research review»، پاراگراف 4,,,,'-1,'-1,,فاصله‌ی خطوط 1.15 است؛ باید 1.5 باشد.,
+dc730603a9616930e19e,toc,2,persian_orthography,B,,,,,'-1,'-1,,فهرست مطالب خودکار (References ▸ Table of Contents) پیدا نشد؛ اگر فهرست را دستی نوشته‌اید، شماره‌صفحه‌ها با ویرایش به‌هم می‌خورد.,
+7cbfca06e281fe24c352,page_numbers,2,persian_orthography,B,,,,,'-1,'-1,,شماره‌ی صفحه‌ی خودکار در سربرگ/پانویس پیدا نشد.,
+ddf6ae2e1f2783821f68,missing_section,2,document_review,B,,,,,'-1,'-1,,بخش «چکیده» پیدا نشد.,
+556369b82c32e06590b5,missing_section,2,document_review,B,,,,,'-1,'-1,,بخش «کلیدواژه‌ها» پیدا نشد.,
+954358b087771afe06b4,missing_section,2,document_review,B,,,,,'-1,'-1,,بخش «مقدمه» پیدا نشد.,
+2023716d06fe75d98edc,missing_section,2,document_review,B,,,,,'-1,'-1,,بخش «روش پژوهش» پیدا نشد.,
+adc22f1bc2514faec890,missing_section,2,document_review,B,,,,,'-1,'-1,,بخش «یافته‌ها / نتایج» پیدا نشد.,
+575c99d9e7a7d9c6f2a0,missing_section,2,document_review,B,,,,,'-1,'-1,,بخش «بحث / نتیجه‌گیری» پیدا نشد.,
+62d885794aaa68464351,missing_section,2,document_review,B,,,,,'-1,'-1,,بخش «منابع» پیدا نشد.,
+4086c130f60303b3ade1,missing_section,2,document_review,B,,,,,'-1,'-1,,بخش «Abstract (چکیده انگلیسی)» پیدا نشد.,
+999ee08bb78c69bea08f,caption_missing,2,persian_orthography,B,,,,,'-1,'-1,,1 جدول در فایل هست ولی فقط 0 عنوان «جدول …» پیدا شد.,
