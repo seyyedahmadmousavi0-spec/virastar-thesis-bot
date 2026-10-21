@@ -9,6 +9,7 @@ from unittest.mock import MagicMock, patch
 
 import bot
 from bot_runtime import JobGate, ThreadLocalHTTP, env_integer, validated_base_url
+from report_store import ReportStore
 
 
 class RecordingPool:
@@ -41,6 +42,9 @@ class BotRuntimeTests(unittest.TestCase):
             p = patch.object(bot, name, value)
             p.start()
             self.addCleanup(p.stop)
+        p = patch.object(bot, "reports", ReportStore())
+        p.start()
+        self.addCleanup(p.stop)
         self.send = patch.object(bot, "send").start()
         self.addCleanup(patch.stopall)
 
@@ -59,7 +63,7 @@ class BotRuntimeTests(unittest.TestCase):
             analyze.assert_not_called()
             bot.modes[1] = "article"
             self.pool.run()
-            analyze.assert_called_once_with(1, "  Research text  ", mode="english")
+            analyze.assert_called_once_with(1, "  Research text  ", mode="english", sender_id=1, progress=unittest.mock.ANY)
         self.assertNotIn(1, bot.busy)
 
     def test_document_captures_mode_and_annotation_flag(self):
@@ -71,7 +75,7 @@ class BotRuntimeTests(unittest.TestCase):
             bot.handle(update, self.pool)
             bot.modes[1] = "english"
             self.pool.run()
-            analyze.assert_called_once_with(1, document, annotate_requested=True, mode="tums")
+            analyze.assert_called_once_with(1, document, annotate_requested=True, mode="tums", sender_id=1, progress=unittest.mock.ANY)
 
     def test_busy_protection_is_shared_by_text_and_document(self):
         with patch.object(bot, "process_text_message"):

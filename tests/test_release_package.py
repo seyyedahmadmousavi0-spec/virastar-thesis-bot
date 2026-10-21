@@ -15,6 +15,7 @@ class ReleasePackageTests(unittest.TestCase):
         self.addCleanup(self.temporary.cleanup)
         self.root = Path(self.temporary.name)
         names = [*ROOT_FILES, "tests/benchmark_cases.json", "docs/PROFESSIONAL_UPGRADE.md",
+                 "docs/STUDENT_EXPERIENCE.md",
                  "docs/DEPLOYMENT.md",
                  "docs/benchmark_results.json", ".github/workflows/precision_tests.yml"]
         for name in names:

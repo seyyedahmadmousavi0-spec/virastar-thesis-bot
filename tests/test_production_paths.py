@@ -17,6 +17,7 @@ import bot
 import checker
 from doc_guard import safe_filename, sha256_file
 from report_artifacts import report_data, html_report
+from report_store import ReportStore
 import review_cli
 
 
@@ -25,6 +26,9 @@ class ProductionPathTests(unittest.TestCase):
         self.tmp = tempfile.TemporaryDirectory()
         self.addCleanup(self.tmp.cleanup)
         self.root = Path(self.tmp.name)
+        cache_patch = patch.object(bot, "reports", ReportStore())
+        cache_patch.start()
+        self.addCleanup(cache_patch.stop)
 
     def test_unicode_filenames_leave_room_for_work_and_annotation_prefixes(self):
         for stem in ("پژوهش" * 60, "📄" * 200, "a" * 300):
@@ -58,16 +62,17 @@ class ProductionPathTests(unittest.TestCase):
         with patch.object(bot, "download", side_effect=download), \
                 patch.object(bot, "send", return_value=True) as send, \
                 patch.object(bot, "send_file", side_effect=send_file):
-            bot.process_document(123, {"file_name": name, "file_id": "synthetic"},
-                                 annotate_requested=True)
+            bot.process_document(123, {"file_name": name, "file_id": "synthetic"})
         self.assertEqual(before, sha256_file(source))
         self.assertTrue(all(not path.parent.exists() for path in downloads))
         return delivered, send
 
-    def test_complete_word_job_delivers_reports_and_preserves_annotated_text(self):
+    def test_complete_word_job_defaults_to_word_and_keeps_optional_reports(self):
         delivered, _ = self.run_document(name="پژوهش" * 60 + ".docx")
-        self.assertEqual({".html", ".txt", ".docx"}, set(delivered))
-        self.assertIn("common_mistake", delivered[".html"].decode("utf-8"))
+        self.assertEqual({".docx"}, set(delivered))
+        reports = bot.reports.get(123, 123)
+        self.assertEqual({"html", "txt"}, set(reports))
+        self.assertIn("common_mistake", reports["html"].decode("utf-8"))
         result = Document(io.BytesIO(delivered[".docx"]))
         self.assertEqual("بخاطر نمونه ها بررسی شد.", result.paragraphs[0].text)
         self.assertGreater(len(result.comments), 0)

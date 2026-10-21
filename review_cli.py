@@ -20,11 +20,17 @@ def main(argv=None, *, engine=None):
     parser.add_argument("--format", choices=("text", "json", "html", "csv"), default="text")
     parser.add_argument("--output-dir", help="ذخیرهٔ گزارش‌های HTML، JSON، CSV و متن")
     parser.add_argument("--annotate", help="مسیر کپی مستقل Word با کامنت")
+    parser.add_argument("--annotate-pdf", help="آزمایشی: مسیر کپی PDF با یادداشت در محل‌های قابل تطبیق")
+    parser.add_argument("--max-comments", type=int, default=250, help="سقف کامنت‌های نسخهٔ بازبینی (۰ تا ۱۰۰۰)")
     parser.add_argument("--include-ambiguous", action="store_true")
     parser.add_argument("--fail-on", choices=("A", "B", "C"), help="بازگرداندن کد ۱ در صورت یافتن این سطح")
     parser.add_argument("--list-rules", action="store_true")
     parser.add_argument("--version", action="version", version=PRODUCT_VERSION)
     args = parser.parse_args(argv)
+    if not 0 <= args.max_comments <= 1000:
+        parser.error("--max-comments باید بین ۰ و ۱۰۰۰ باشد")
+    if args.annotate and args.annotate_pdf:
+        parser.error("فقط یکی از --annotate و --annotate-pdf را انتخاب کنید")
     if args.list_rules:
         from rule_registry import rule_catalog
         extras = [row[0] for row in engine.TEXT_RULES]
@@ -36,6 +42,8 @@ def main(argv=None, *, engine=None):
         source = Path(args.file)
         if args.annotate:
             ensure_distinct_output(source, args.annotate)
+        if args.annotate_pdf:
+            ensure_distinct_output(source, args.annotate_pdf)
         rules = engine.load_rules(args.rules, args.mode)
         if args.include_ambiguous:
             rules["strict"] = False
@@ -58,11 +66,19 @@ def main(argv=None, *, engine=None):
         stats["analysis_duration_seconds"] = round(time.monotonic() - start, 3)
         if args.annotate and doc is None:
             raise ValueError("Annotation is available only for Word documents")
+        if args.annotate:
+            engine.annotate(doc, issues, args.annotate, max_comments=args.max_comments, per_par=None)
+            stats["annotation_summary"] = getattr(doc, "_last_annotation_summary", {})
+            stats["annotation_format"] = "docx"
+        if args.annotate_pdf:
+            if not stats.get("is_pdf"):
+                raise ValueError("--annotate-pdf requires a PDF input")
+            from pdf_annotator import annotate_pdf
+            stats["annotation_summary"] = annotate_pdf(source, issues, args.annotate_pdf, max_comments=args.max_comments)
+            stats["annotation_format"] = "pdf"
         text = engine.build_report(issues, stats, rules)
         if args.output_dir:
             write_artifacts(args.output_dir, issues, stats, rules, source_path=source, text_report=text)
-        if args.annotate:
-            engine.annotate(doc, issues, args.annotate)
         data = report_data(issues, stats, rules)
         output = {"text": lambda: text, "json": lambda: json_report(data),
                   "html": lambda: html_report(data), "csv": lambda: csv_report(data)}[args.format]()

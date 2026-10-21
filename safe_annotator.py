@@ -6,7 +6,7 @@ import io
 import os
 import tempfile
 import zipfile
-from collections import defaultdict
+from collections import Counter, defaultdict
 from docx import Document
 from docx.enum.text import WD_COLOR_INDEX
 from docx.oxml.ns import qn
@@ -80,9 +80,76 @@ def _payload(doc):
     result = [r for r in result if r[0] != qn("w:t")]
     return text, result
 
-def annotate_document(doc, issues, out_path, max_comments=250, per_par=4):
+def _comment_text(issue):
+    """Keep qualifiers intact; never cut a long sentence into a stronger claim."""
+    from rule_registry import rule_spec
+    labels = {"A": "اطمینان بالا", "B": "نیازمند بررسی", "C": "مبهم؛ فقط بررسی دستی"}
+    reason = " ".join(str(issue.message or "").split())
+    suggestion = " ".join(str(issue.suggestion or "").split())
+    if not reason or len(reason) > 160:
+        reason = rule_spec(issue.rule_id).title + "؛ دلیل کامل در گزارش آمده است."
+    if len(suggestion) > 160:
+        suggestion = "پیش از هر تغییر، پیشنهاد کامل گزارش را با متن اصلی مقایسه کنید."
+    elif not suggestion:
+        suggestion = "این مورد را با توجه به بافت متن بازبینی کنید."
+    return (f"{issue.rule_id} | {issue.confidence} — {labels[issue.confidence]}\n"
+            f"دلیل: {reason}\nپیشنهاد: {suggestion}")
+
+
+def _exact_target(paragraph, issue):
+    """Resolve a unique literal witness without changing a single run."""
+    target = issue.target_text
+    left, right = issue.char_start, issue.char_end
+    if not target:
+        return None
+    text = paragraph.text
+    if left < 0:
+        if text.count(target) != 1:
+            return None
+        left = text.find(target)
+        right = left + len(target)
+    if not 0 <= left < right <= len(text) or text[left:right] != target:
+        return None
+    if unicodedata.category(text[left]).startswith("M") or (
+            right < len(text) and unicodedata.category(text[right]).startswith("M")):
+        return None
+    return left, right
+
+
+def annotate_document(doc, issues, out_path, max_comments=250, per_par=4,
+                      include_ambiguous=False):
+    """Annotate exact witnesses on a copy, selecting A then B globally.
+
+    The return value retains its historical meaning (at least one new comment).
+    ``_last_annotation_summary.output_created`` describes successful publication
+    separately, including the useful zero-comment review copy.
+    """
+    for name, value in (("max_comments", max_comments), ("per_par", per_par)):
+        if name == "per_par" and value is None:
+            continue
+        if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+            raise ValueError(f"{name} must be a nonnegative integer")
+    if not isinstance(include_ambiguous, bool):
+        raise ValueError("include_ambiguous must be a boolean")
+    issues = list(issues)
+    records = [dict(index=index, rule_id=issue.rule_id, confidence=issue.confidence,
+                    block_id=issue.block_id, source_part=issue.source_part,
+                    xml_path=issue.xml_path, story=issue.story, par_index=issue.par_index,
+                    char_start=issue.char_start, char_end=issue.char_end,
+                    status="unapplied", reason="location_unavailable")
+               for index, issue in enumerate(issues)]
+    summary = {"requested": len(issues), "applied": 0, "unapplied": len(issues),
+               "max_comments": max_comments, "per_par": per_par,
+               "include_ambiguous": include_ambiguous, "output_created": False,
+               "reasons": {}, "records": records}
     if doc is None or not hasattr(doc, "add_comment"):
+        for record in records:
+            record["reason"] = "annotation_unavailable"
+        summary["reasons"] = dict(Counter(record["reason"] for record in records))
+        if doc is not None:
+            doc._last_annotation_summary = summary
         return False
+    doc._last_annotation_summary = summary
     source = getattr(doc, "_review_source_path", None)
     initial_hash = getattr(doc, "_review_source_hash", None)
     if source:
@@ -101,8 +168,19 @@ def annotate_document(doc, issues, out_path, max_comments=250, per_par=4):
     before = _payload(working)
     grouped = defaultdict(list)
     paragraphs = {}
-    for issue in issues:
-        if issue.confidence == "C" or issue.protected_overlap:
+    selected = 0
+    covered = defaultdict(list)
+    seen = defaultdict(set)
+    # Select before adding comment markers: these markers intentionally make
+    # _simple_runs reject later editing of a paragraph containing old comments.
+    priority = {"A": 0, "B": 1, "C": 2}
+    for index, issue in sorted(enumerate(issues), key=lambda pair: priority[pair[1].confidence]):
+        record = records[index]
+        if issue.confidence == "C" and not include_ambiguous:
+            record["reason"] = "ambiguous_excluded"
+            continue
+        if issue.protected_overlap:
+            record["reason"] = "protected_content"
             continue
         if issue.xml_path and issue.source_part.lstrip("/") == "word/document.xml" and issue.story in {"body", "table"}:
             key = ("xml", issue.xml_path)
@@ -112,51 +190,63 @@ def annotate_document(doc, issues, out_path, max_comments=250, per_par=4):
                 try:
                     found = etree.XPath(issue.xml_path, namespaces={k: v for k, v in working.element.nsmap.items() if k})(working.element)
                 except etree.XPathError:
+                    record["reason"] = "location_unavailable"
                     continue
                 if len(found) != 1 or found[0].tag != qn("w:p"):
+                    record["reason"] = "location_unavailable"
                     continue
                 paragraphs[key] = Paragraph(found[0], working)
-        elif issue.par_index >= 0 and not issue.source_part:
+        elif issue.par_index >= 0 and not issue.source_part and not issue.xml_path and issue.story in {"", "body"}:
             key = ("body", issue.par_index)
             if issue.par_index >= len(working.paragraphs):
                 continue
             paragraphs[key] = working.paragraphs[issue.par_index]
         else:
+            record["reason"] = "unsupported_story" if issue.source_part or issue.story else "location_unavailable"
             continue
-        grouped[key].append(issue)
+        paragraph = paragraphs[key]
+        if not _simple_runs(paragraph):
+            record["reason"] = "unsafe_structure"
+            continue
+        target = _exact_target(paragraph, issue)
+        if target is None:
+            record["reason"] = "uncertain_location"
+            continue
+        left, right = target
+        identity = (issue.rule_id, left, right, issue.target_text)
+        if identity in seen[key]:
+            record["reason"] = "duplicate"
+            continue
+        seen[key].add(identity)
+        if any(left < b and a < right for a, b in covered[key]):
+            record["reason"] = "overlapping_target"
+            continue
+        if selected >= max_comments:
+            record["reason"] = "comment_limit"
+            continue
+        if per_par is not None and len(grouped[key]) >= per_par:
+            record["reason"] = "paragraph_limit"
+            continue
+        grouped[key].append((issue, index, left, right))
+        covered[key].append(target)
+        selected += 1
     count = 0
     for key, items in grouped.items():
         paragraph = paragraphs[key]
-        # Resolve every target before modifying XML. No paragraph fallback.
-        if not _simple_runs(paragraph):
-            continue
-        seen = set()
         pending = []
-        covered = []
-        for issue in items:
-            if count + len(pending) >= max_comments or len(pending) >= per_par:
-                break
-            key = (issue.rule_id, issue.char_start, issue.char_end, issue.target_text)
-            if key in seen:
-                continue
-            seen.add(key)
-            left, right = issue.char_start, issue.char_end
-            if left < 0 and issue.target_text and paragraph.text.count(issue.target_text) == 1:
-                left = paragraph.text.find(issue.target_text)
-                right = left + len(issue.target_text)
-            if any(left < b and a < right for a, b in covered):
-                continue
+        for issue, index, left, right in items:
             runs = _find_and_highlight_target(paragraph, issue.target_text, left, right)
-            if runs:
-                pending.append((runs, issue))
-                covered.append((left, right))
-        for runs, issue in pending:
-            working.add_comment(runs, text=issue.rule_id + " [" + issue.confidence + "] "
-                                + issue.message + ("\nSuggestion: " + issue.suggestion if issue.suggestion else ""),
+            if not runs:
+                raise DocumentIntegrityError("Selected witness changed during annotation")
+            pending.append((runs, issue, index))
+        for runs, issue, index in pending:
+            working.add_comment(runs, text=_comment_text(issue),
                                 author="Research Editor", initials="RE")
+            records[index].update(status="applied", reason="annotated")
             count += 1
-    doc._last_annotation_summary = {"requested": len(issues), "applied": count,
-                                    "unapplied": len(issues) - count}
+    summary.update(applied=count, unapplied=len(issues) - count,
+                   reasons=dict(Counter(record["reason"] for record in records
+                                        if record["status"] != "applied")))
     if _payload(working) != before:
         raise DocumentIntegrityError("Annotation changed document payload")
     buffer = io.BytesIO()
@@ -164,7 +254,11 @@ def annotate_document(doc, issues, out_path, max_comments=250, per_par=4):
     # Retain all original package bytes except main document and comment wiring.
     generated = zipfile.ZipFile(buffer)
     export = io.BytesIO()
-    if source:
+    if source and count == 0:
+        # With no comments, the independent review copy can retain every byte.
+        with open(source, "rb") as original_stream:
+            export.write(original_stream.read())
+    elif source:
         with zipfile.ZipFile(source) as original, zipfile.ZipFile(export, "w") as output:
             names = set(original.namelist())
             replace = {"word/document.xml", "word/_rels/document.xml.rels", "[Content_Types].xml"}
@@ -212,4 +306,5 @@ def annotate_document(doc, issues, out_path, max_comments=250, per_par=4):
     finally:
         if os.path.exists(temporary):
             os.unlink(temporary)
+    summary["output_created"] = True
     return count > 0

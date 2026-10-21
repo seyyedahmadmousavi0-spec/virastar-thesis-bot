@@ -52,14 +52,15 @@ class JobGate:
         self._sequence = 0
         self._accepting = True
 
-    def reserve(self, chat_id):
+    def reserve(self, chat_id, *, cooldown=None):
         with self.lock:
             if not self._accepting:
                 return None, "stopping", 0
             if chat_id in self.busy:
                 return None, "busy", 0
             now = self.clock()
-            wait = self.cooldown - (now - self.last_started.get(chat_id, -float("inf")))
+            effective_cooldown = self.cooldown if cooldown is None else cooldown
+            wait = effective_cooldown - (now - self.last_started.get(chat_id, -float("inf")))
             if wait > 0:
                 return None, "cooldown", wait
             if len(self._tokens) >= self.capacity:

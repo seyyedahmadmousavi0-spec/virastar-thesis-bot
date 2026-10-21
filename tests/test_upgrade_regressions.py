@@ -276,14 +276,16 @@ class UpgradeRegressions(unittest.TestCase):
         self.assertNotIn("SYNTHETIC_PRIVATE_TEXT",payload)
         self.assertNotIn("chat_id",payload)
 
-    def test_bot_annotations_require_explicit_opt_in(self):
+    def test_bot_word_annotation_defaults_on_and_legacy_flag_is_compatible(self):
         import bot
         def download(file_id,destination):
             d=Document();d.add_paragraph("alpha beta");d.save(destination)
         for requested in (False,True):
             with self.subTest(requested=requested), patch.object(bot,"download",side_effect=download), patch.object(bot,"send"), patch.object(bot,"send_file"), patch.object(checker,"annotate",return_value=False) as annotate:
                 bot.process_document(98765,{"file_name":"synthetic.docx","file_id":"synthetic"},annotate_requested=requested)
-                self.assertEqual(int(requested),annotate.call_count)
+                self.assertEqual(1,annotate.call_count)
+                self.assertEqual(250, annotate.call_args.kwargs["max_comments"])
+                self.assertIsNone(annotate.call_args.kwargs["per_par"])
 
     def test_per_rule_benchmark_rejects_unrelated_alert(self):
         import contextlib,json,run_benchmark

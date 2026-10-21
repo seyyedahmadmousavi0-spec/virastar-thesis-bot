@@ -29,6 +29,8 @@ from doc_guard import DocumentGuard, safe_filename, sha256_file, validate_docume
 from protected_content import ProtectedContentDetector
 import safe_annotator
 from rule_registry import FindingBuffer, bounded_findings
+from report_artifacts import (ANNOTATION_REASONS, COVERAGE_LABELS, STORY_LABELS,
+                              ambiguous_count, annotation_format_label, category_label, location_label, safe_annotation_summary)
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 ZWNJ = "\u200c"
@@ -245,7 +247,28 @@ def _finish_analysis(issues, stats, started, rules=None):
     stats["analysis_duration_seconds"] = round(time.monotonic() - started, 3)
     for issue in issues:
         enrich_issue(issue)
+    if stats.get("analysis_status") != "failed":
+        limited = (stats.get("skipped_blocks", 0) or stats.get("partial_blocks", 0)
+                   or any(issue.extraction_status in {"analysis_limited", "analysis_skipped", "no_reliable_text"}
+                          for issue in issues)
+                   or any(info.get("status") in {"partial", "present"}
+                          for info in stats.get("coverage", {}).values()))
+        stats["analysis_status"] = "partial" if limited else stats.get("analysis_status", "complete")
     return deduplicate_issues(issues)
+
+
+def _document_coverage(blocks, analyzed, block_limit):
+    coverage = {}
+    for story in ("body", "table", "header", "footer", "footnote", "endnote", "textbox"):
+        selected = [block for block in blocks if block.story == story]
+        complete = sum((block.block_id in analyzed and len(block.text) <= block_limit)
+                       or (not block.text.strip() and block.extraction_status == "native") for block in selected)
+        partial = sum(block.extraction_status != "native" or len(block.text) > block_limit for block in selected)
+        status = ("absent" if not selected else "partial" if partial or 0 < complete < len(selected)
+                  else "analyzed" if complete == len(selected) else "present")
+        coverage[story] = {"status": status, "present_blocks": len(selected),
+                           "analyzed_blocks": complete, "partial_blocks": partial}
+    return coverage
 
 
 def _attach_block_issues(issues, block):
@@ -463,7 +486,7 @@ def _word_re(w):
     return re.compile("(?<![" + FA + ZWNJ + "])" + re.escape(w) + "(?![" + FA + ZWNJ + "])")
 
 
-def check_text(par_index, text, loc, rules, in_refs=False, in_declaration=False):
+def check_text(par_index, text, loc, rules, in_refs=False, in_declaration=False, *, audit=None):
     from protected_content import ProtectedSpan
     if len(text) > rules.get("max_analysis_block_chars", 200000):
         return [Issue("analysis_limit", "warn", "Block exceeds the analysis budget; manual review required.",
@@ -477,7 +500,7 @@ def check_text(par_index, text, loc, rules, in_refs=False, in_declaration=False)
             for m in re.finditer(re.escape(term), text):
                 protected.append(ProtectedSpan(m.start(), m.end(), "configured_term", m.group()))
     issues = _check_text(par_index, text, loc, rules, in_refs, in_declaration)
-    result = []
+    result, suppressed = [], []
     for issue in issues:
         if issue.rule_id in rules.get("disabled_rules", []):
             continue
@@ -502,6 +525,10 @@ def check_text(par_index, text, loc, rules, in_refs=False, in_declaration=False)
                 issue.confidence = "C"
         if issue.confidence != "C" or not rules.get("strict", True):
             result.append(issue)
+        else:
+            suppressed.append(issue)
+    if audit is not None:
+        audit["ambiguous_candidates"] = audit.get("ambiguous_candidates", 0) + len(deduplicate_issues(suppressed))
     return deduplicate_issues(result)
 
 
@@ -1093,7 +1120,7 @@ def analyze(path, mode="thesis", rules=None):
                                      max_total_chars=rules.get("max_document_chars", 4_000_000))
     body_blocks = {block.paragraph_index: block for block in blocks
                    if block.story == "body" and block.paragraph_index >= 0}
-    issues, stats = [], {"mode": mode, "file_sha256": pre_hash}
+    issues, stats = [], {"mode": mode, "file_sha256": pre_hash, "ambiguous_candidates": 0}
 
     heading = "ابتدای سند"
     ctx = []
@@ -1132,7 +1159,7 @@ def analyze(path, mode="thesis", rules=None):
         blank_run = 0
         in_refs = ref_i is not None and i > ref_i
         in_decl = any(kw in h.lower() for kw in ["تعهد", "اصالت", "سپاس", "تقدیم", "declaration"])
-        found = check_text(i, text, f"زیر «{h}»، پاراگراف {i + 1}", rules, in_refs, in_declaration=in_decl)
+        found = check_text(i, text, f"زیر «{h}»، پاراگراف {i + 1}", rules, in_refs, in_declaration=in_decl, audit=stats)
         issues += _attach_block_issues(found, block) if block is not None else found
         if block is not None:
             analyzed_blocks.add(block.block_id)
@@ -1148,7 +1175,7 @@ def analyze(path, mode="thesis", rules=None):
             break
         if block.story == "table":
             table_cells_count += 1
-        found = check_text(-1, block.text, block.location, rules)
+        found = check_text(-1, block.text, block.location, rules, audit=stats)
         issues += _attach_block_issues(found, block)
         analyzed_blocks.add(block.block_id)
     stats["tables"] = len(doc.tables)
@@ -1174,7 +1201,7 @@ def analyze(path, mode="thesis", rules=None):
         if issue.confidence == "A" and issue.location_status != "exact":
             issue.confidence = "B"
     stats["coverage_limits"] = [
-        "متن جدول‌های تو‌در‌تو، سرصفحه/پاصفحه، یادداشت‌ها و متن‌کادرهای قابل استخراج بررسی شده است؛ فرمول‌ها و تغییرات ردگیری‌شده بررسی کامل ندارند.",
+        "وضعیت بخش‌های استخراج‌شده در جدول پوشش آمده است؛ فرمول‌ها و تغییرات ردگیری‌شده بررسی کامل ندارند. استخراج متن به معنی امکان درج امن کامنت نیست.",
         "شمارهٔ صفحهٔ Word از شمارهٔ پاراگراف قابل استنتاج نیست.",
         "تطبیق ارجاعات محتاطانه است و محتوای علمی منابع را تأیید نمی‌کند.",
         "نسخه و تاریخ همهٔ بندهای پروفایل دانشگاهی مستقلاً تأیید نشده است."
@@ -1185,6 +1212,7 @@ def analyze(path, mode="thesis", rules=None):
     stats["source_chars"] = sum(len(block.text) for block in blocks)
     stats["story_counts"] = dict(Counter(block.story for block in blocks))
     stats["partial_blocks"] = sum(block.extraction_status != "native" for block in blocks)
+    stats["coverage"] = _document_coverage(blocks, analyzed_blocks, rules.get("max_analysis_block_chars", 200000))
     if len(issues) >= findings_budget:
         stats["skipped_blocks"] = sum(bool(block.text.strip()) and block.block_id not in analyzed_blocks for block in blocks)
         issues.append(Issue("findings_limit", "warn", "بودجهٔ یافته‌ها تکمیل شد؛ همهٔ بلوک‌های متن بررسی نشده‌اند.",
@@ -1206,7 +1234,7 @@ def analyze_pdf(pdf_path, mode="thesis", rules=None):
     extracted = pdf_handler.extract_pdf_content(pdf_path, max_pages=rules.get("max_pdf_pages", 1000),
                                                max_chars=rules.get("max_document_chars", 4_000_000),
                                                max_blocks=rules.get("max_document_blocks", 25000))
-    issues, stats = [], {"mode": mode, "is_pdf": True, "file_sha256": pre_hash}
+    issues, stats = [], {"mode": mode, "is_pdf": True, "file_sha256": pre_hash, "ambiguous_candidates": 0}
 
     if not extracted.get("ok"):
         stats["analysis_status"] = "failed"
@@ -1216,6 +1244,7 @@ def analyze_pdf(pdf_path, mode="thesis", rules=None):
         return None, _finish_analysis(issues, stats, started, rules), stats
 
     if extracted.get("no_text_document", extracted.get("is_scanned")):
+        stats["analysis_status"] = "partial"
         issues.append(Issue("pdf_scanned_warning", "warn",
                             "متن قابل استخراج این PDF کم است؛ احتمال تصویرمحور بودن یا استخراج ناقص وجود دارد. طبق اصل ۱۰، استخراج متن با اطمینان کافی نیازمند سامانه OCR است و نمی‌توان درباره بخش‌های ناخوانا نظر قطعی داد.",
                             confidence=ConfidenceLevel.REVIEW_B.value))
@@ -1250,7 +1279,7 @@ def analyze_pdf(pdf_path, mode="thesis", rules=None):
                 stats["skipped_blocks"] += 1
                 par_idx += 1
                 continue
-            found = check_text(-1, par_text, loc, rules)
+            found = check_text(-1, par_text, loc, rules, audit=stats)
             for issue in found:
                 issue.block_id = block["block_id"]
                 issue.source_part = f"pdf/page/{p_num}"
@@ -1300,7 +1329,7 @@ def analyze_text(raw_text, mode="thesis", rules=None):
     rules = _prepare_rules(rules, mode)
     if len(raw_text) > rules.get("max_document_chars", 4_000_000):
         raise ValueError("Text exceeds its document analysis budget")
-    issues, stats = [], {"mode": mode, "is_raw_text": True}
+    issues, stats = [], {"mode": mode, "is_raw_text": True, "ambiguous_candidates": 0}
     paragraphs = [p for p in raw_text.split("\n\n") if p.strip()]
     if len(paragraphs) > rules.get("max_document_blocks", 25000):
         raise ValueError("Text exceeds its block analysis budget")
@@ -1314,7 +1343,7 @@ def analyze_text(raw_text, mode="thesis", rules=None):
             stats["skipped_blocks"] += 1
             continue
         loc = f"پاراگراف {i + 1}"
-        found = check_text(i, p, loc, rules)
+        found = check_text(i, p, loc, rules, audit=stats)
         for issue in found:
             issue.block_id = f"text:p{i+1}"
             issue.story = "text"
@@ -1339,9 +1368,11 @@ def analyze_text(raw_text, mode="thesis", rules=None):
 # ----------------------------------------------------------------------------
 # تولید گزارش جامع و تفکیک‌شده (بر پایه سطوح قطعیت و شواهد قطعی)
 # ----------------------------------------------------------------------------
-def build_report(issues, stats, rules, examples=1000):
-    hidden_ambiguous = sum(i.confidence == "C" for i in issues)
-    issues = [i for i in issues if i.confidence != "C" or not rules.get("strict", True)]
+def build_report(issues, stats, rules, examples=None):
+    """Full text report by default; explicit preview limits are always disclosed."""
+    if examples is not None and (isinstance(examples, bool) or not isinstance(examples, int) or examples < 0):
+        raise ValueError("examples must be a nonnegative integer or None")
+    issues = list(issues)
     mode_key = stats.get("mode", "thesis")
     mode_title = rules.get("modes", {}).get(mode_key, {}).get("title", mode_key)
     if mode_key == "tums":
@@ -1352,23 +1383,28 @@ def build_report(issues, stats, rules, examples=1000):
 
     lines = [
         "══════════════════════════════════════════════════════════════",
-        "  سامانه جامع ویراستار پژوهش — گزارش ارزیابی علمی، ممیزی و نگارشی",
+        "  ویراستار پژوهش — گزارش بازبینی نگارشی و ساختاری",
         "══════════════════════════════════════════════════════════════",
         "",
-        "الف) خلاصه ارزیابی و مشخصات سند",
+        "الف) خلاصهٔ بررسی و مشخصات سند",
         "──────────────────────────────────────────────────────────────",
         f"• شیوه نامه / الگوی انتخابی: {mode_title}",
         f"• تعداد پاراگراف‌ها: {stats.get('paragraphs', 0)} | تعداد کلمات: {stats.get('words', 0)}",
     ]
     if stats.get("analysis_status") == "failed":
         lines.append("❌ بررسی سند تکمیل نشد؛ متن قابل‌اعتماد برای ارزیابی در دسترس نبود.")
-    if hidden_ambiguous and rules.get("strict", True):
-        lines.append(f"• موارد مبهم حذف‌شده از فهرست خطاها: {hidden_ambiguous}؛ بررسی دستی لازم است.")
+    elif stats.get("analysis_status") == "partial":
+        lines.append("⚠️ بررسی بخشی از سند انجام شد؛ بخش‌های بررسی‌نشده و محدودیت‌ها را در ادامه ببینید.")
+    ambiguous = ambiguous_count(issues, stats, rules)
+    if ambiguous is None:
+        lines.append("• تعداد موارد مبهمِ کنارگذاشته‌شده ثبت نشده است؛ صفر فرض نشده‌اند.")
+    elif stats.get("ambiguous_candidates", 0):
+        lines.append(f"• {stats['ambiguous_candidates']} مورد مبهم در حالت سخت‌گیرانه وارد فهرست ایرادها نشده است؛ بررسی دستی متن همچنان لازم است.")
     if "total_pages" in stats:
         lines.append(f"• تعداد صفحات PDF: {stats['total_pages']}")
     if "tables" in stats or "images" in stats:
         t_cells = stats.get('table_cells_analyzed', 0)
-        lines.append(f"• تعداد جدول‌ها: {stats.get('tables', 0)} (سلول‌های بررسی‌شده: {t_cells}) | تعداد تصاویر: {stats.get('images', 0)}")
+        lines.append(f"• تعداد جدول‌های اصلی: {stats.get('tables', 0)} (بلوک‌های متن جدول بررسی‌شده: {t_cells}) | تعداد تصاویر: {stats.get('images', 0)}")
     for limitation in stats.get("coverage_limits", []):
         lines.append("• محدودیت بررسی: " + limitation)
     if "file_sha256" in stats:
@@ -1378,7 +1414,8 @@ def build_report(issues, stats, rules, examples=1000):
         f"• شاخص شدت خطاها: {SEVERITY_ICON['error']} {sev_count['error']} مورد گزارش‌شده  |  "
         f"{SEVERITY_ICON['warn']} {sev_count['warn']} هشدار/اصلاحی  |  "
         f"{SEVERITY_ICON['info']} {sev_count['info']} پیشنهاد بهبود",
-        f"• سطوح قطعیت ممیزی: 【سطح A - اطمینان بالا】: {conf_count['A']}  |  【سطح B - نیازمند بررسی】: {conf_count['B']}  |  【سطح C - احتمالی】: {conf_count['C']}",
+        f"• سطح اطمینان: A، اطمینان بالا: {conf_count['A']} | B، نیازمند بازبینی: {conf_count['B']} | C، مبهم: {ambiguous if ambiguous is not None else 'نامشخص'}",
+        "• A/B/C درصد دقت نیستند؛ موارد C فقط برای بررسی دستی‌اند.",
         "",
         "ب) دسته‌بندی تفکیک‌شده ایرادها",
         "──────────────────────────────────────────────────────────────",
@@ -1387,11 +1424,30 @@ def build_report(issues, stats, rules, examples=1000):
     # گروه‌بندی بر اساس دسته‌بندی‌های استاندارد
     cat_groups = defaultdict(list)
     for it in issues:
-        cat = getattr(it, "category", "") or RULE_CATEGORIES.get(it.rule_id, "سایر موارد")
+        cat = category_label(getattr(it, "category", "") or RULE_CATEGORIES.get(it.rule_id, "سایر موارد"))
         cat_groups[f"سطح {it.confidence} / {cat}"].append(it)
 
     for cat_name, cat_issues in sorted(cat_groups.items()):
         lines.append(f"📌 {cat_name}: {len(cat_issues)} مورد")
+
+    annotation = safe_annotation_summary(stats.get("annotation_summary"))
+    output_label = annotation_format_label(stats)
+    records = {record.get("index"): record for record in (annotation or {}).get("records", [])}
+    indices = {id(issue): index for index, issue in enumerate(issues)}
+    if annotation:
+        lines += ["", "کامنت‌های نسخهٔ بازبینی",
+                  f"از {annotation.get('requested', len(issues))} مورد گزارش‌شده، {annotation.get('applied', 0)} مورد در {output_label} کامنت شد."]
+        if not annotation.get("output_created"):
+            lines.append("تولید امن نسخهٔ بازبینی تکمیل نشد؛ جزئیات یافته‌ها در همین گزارش آمده است.")
+        if annotation.get("experimental"):
+            lines.append("نشانه‌گذاری PDF آزمایشی است؛ نمایش یادداشت فارسی در PDFخوان شما باید بررسی شود.")
+        for reason, count in annotation.get("reasons", {}).items():
+            lines.append(f"• {ANNOTATION_REASONS.get(reason, reason)}: {count} مورد")
+    if stats.get("coverage"):
+        lines += ["", "پوشش بخش‌های سند (استخراج متن با امکان درج کامنت یکسان نیست)"]
+        for story, info in stats["coverage"].items():
+            lines.append(f"• {STORY_LABELS.get(story, story)}: {COVERAGE_LABELS.get(info.get('status'), 'نامشخص')}؛ "
+                         f"{info.get('analyzed_blocks', 0)} از {info.get('present_blocks', 0)} بلوک متن بررسی شد.")
 
     # چک‌لیست دانشگاه علوم پزشکی تهران در صورت انتخاب TUMS
     if "tums_checklist" in stats and stats["tums_checklist"]:
@@ -1410,22 +1466,31 @@ def build_report(issues, stats, rules, examples=1000):
     ]
 
     if not issues:
-        lines.append("✅ هیچ خطای نگارشی، ساختاری یا قالب‌بندی قابل‌توجهی یافت نشد.")
+        lines.append("در بخش‌های بررسی‌شده، موردی مطابق قواعد فعال شناسایی نشد.")
     else:
         issue_counter = 1
         for cat_name, cat_issues in sorted(cat_groups.items()):
             lines.append(f"\n【 {cat_name} 】")
-            for it in cat_issues[:examples]:
+            selected = cat_issues if examples is None else cat_issues[:examples]
+            if examples is not None and len(selected) < len(cat_issues):
+                lines.append(f"این نمایش به درخواست به {examples} نمونه محدود است؛ {len(cat_issues) - len(selected)} مورد این دسته در این نسخهٔ خلاصه نمایش داده نشده است.")
+            for it in selected:
                 rule_name = RULE_TITLES.get(it.rule_id, it.rule_id)
                 conf_badge = f"【سطح {getattr(it, 'confidence', 'A')}】"
                 row = f"[{issue_counter}] {SEVERITY_ICON.get(it.severity, 'ℹ️')} {it.rule_id} {conf_badge} — {rule_name}"
                 if it.loc:
-                    row += f"\n    📍 محل: {it.loc}"
+                    row += f"\n    📍 محل: {location_label(it.loc)}"
                 row += f"\n    📝 شرح: {it.message}"
                 if it.snippet:
                     row += f"\n    🔍 متن: «{it.snippet}»"
                 if it.suggestion:
                     row += f"\n    💡 پیشنهاد اصلاح: «{it.suggestion}»"
+                if it.confidence == "C":
+                    row += "\n    بررسی دستی: این مورد مبهم است و به‌عنوان خطای قطعی گزارش نشده است."
+                record = records.get(indices[id(it)])
+                if record is not None and record.get("rule_id", it.rule_id) == it.rule_id:
+                    state = f"در {output_label} کامنت شد" if record.get("status") == "applied" else ANNOTATION_REASONS.get(record.get("reason"), f"در {output_label} کامنت نشد")
+                    row += f"\n    وضعیت {output_label}: {state}"
                 lines.append(row + "\n")
                 issue_counter += 1
 
@@ -1434,7 +1499,7 @@ def build_report(issues, stats, rules, examples=1000):
         "هـ) تعهدنامه حفاظت از داده و راهنمای پژوهشگر",
         "──────────────────────────────────────────────────────────────",
         "۱. مطابق اصل تغییرناپذیری، فایل اصلی کاربر صرفاً خوانده شده و در مسیر تحلیل برای ذخیره‌سازی باز نمی‌شود و کنترل هش برای ورودی فایل فعال است.",
-        "۲. هیچ ویرایش خودکاری روی فرمول‌ها، یکاها، ارقام، نام‌های خاص و جدول‌ها صورت نگرفته است.",
+        "۲. پیشنهادها خودکار روی متن، فرمول‌ها، یکاها، ارقام و نام‌های خاص اعمال نشده‌اند؛ نسخهٔ بازبینی فقط نشانه‌گذاری دارد.",
         "۳. پیشنهادات سطح B و C صرفاً جنبه مشورتی داشته و تصمیم نهایی با نویسنده و استاد راهنما است.",
         "══════════════════════════════════════════════════════════════"
     ]
@@ -1443,33 +1508,33 @@ def build_report(issues, stats, rules, examples=1000):
 
 
 def build_summary(issues, stats, rules):
-    """خلاصه‌ی پیام چت در پیام‌رسان بله."""
-    issues = [i for i in issues if i.confidence != "C" or not rules.get("strict", True)]
-    mode_key = stats.get("mode", "thesis")
-    mode_title = rules.get("modes", {}).get(mode_key, {}).get("title", mode_key)
-    if mode_key == "tums":
-        mode_title = "دانشگاه علوم پزشکی تهران (TUMS)"
-
-    sev = Counter(it.severity for it in issues)
+    """A short student-facing receipt built after annotation has been validated."""
+    issues = list(issues)
     conf = Counter(getattr(it, "confidence", "A") for it in issues)
+    ambiguous = ambiguous_count(issues, stats, rules)
+    annotation = safe_annotation_summary(stats.get("annotation_summary"))
+    output_label = annotation_format_label(stats)
+    title = ("❌ بررسی سند تکمیل نشد؛ علت در گزارش آمده است." if stats.get("analysis_status") == "failed"
+             else "📄 نسخهٔ بازبینی آماده است." if annotation and annotation.get("output_created")
+             else "📄 نتیجهٔ بررسی آماده است.")
     lines = [
-        (f"❌ بررسی «{mode_title}» تکمیل نشد؛ جزئیات خطای خواندن در گزارش آمده است."
-         if stats.get("analysis_status") == "failed" else f"📄 بررسی «{mode_title}» به پایان رسید"),
-        f"📊 {stats.get('paragraphs', 0)} پاراگراف · {stats.get('words', 0)} کلمه" +
-        (f" · {stats.get('tables', 0)} جدول" if stats.get("tables") else ""),
-        f"{SEVERITY_ICON['error']} {sev['error']} مورد گزارش‌شده  ·  {SEVERITY_ICON['warn']} {sev['warn']} هشدار  ·  {SEVERITY_ICON['info']} {sev['info']} پیشنهاد",
-        f"🎯 شاخص قطعیت: {conf['A']} با اطمینان بالا (سطح A)  ·  {conf['B']} نیازمند بررسی (سطح B)",
-        "",
+        title,
+        f"A، اطمینان بالا: {conf['A']} · B، نیازمند بازبینی: {conf['B']} · C، مبهم: {ambiguous if ambiguous is not None else 'نامشخص'}",
     ]
-    # دسته‌بندی ایرادها
-    cat_counts = Counter(getattr(it, "category", "") or RULE_CATEGORIES.get(it.rule_id, "سایر موارد") for it in issues)
-    for cat, cnt in cat_counts.most_common(5):
-        lines.append(f"• {cat}: {cnt} مورد")
-
-    if not issues:
-        lines.append("✅ هیچ خطای نگارشی یافت نشد؛ این نتیجه تأیید صحت علمی متن نیست.")
-    else:
-        lines.append("\n📋 جزئیات در گزارش متنی موجود است؛ خروجی Word فقط در صورت درخواست تولید می‌شود.")
+    if annotation:
+        lines.append(f"از {annotation.get('requested', len(issues))} مورد گزارش‌شده، {annotation.get('applied', 0)} مورد در {output_label} کامنت شد؛ علت درج‌نشدن بقیه در گزارش آمده است.")
+        if not annotation.get("output_created"):
+            lines.append(f"تولید امن {output_label} تکمیل نشد؛ گزارش جایگزین را ببینید.")
+    if stats.get("analysis_status") == "partial":
+        lines.append("⚠️ بخشی از سند بررسی نشد یا پوشش کامل نداشت؛ جزئیات در گزارش است.")
+    if not issues and stats.get("analysis_status") != "failed":
+        lines.append("در بخش‌های بررسی‌شده، موردی مطابق قواعد فعال شناسایی نشد.")
+    if ambiguous is None:
+        lines.append("تعداد موارد مبهم ثبت نشده است؛ صفر فرض نشده‌اند.")
+    lines.append("پیشنهادها خودکار اعمال نشده‌اند؛ موارد C فقط برای بررسی دستی‌اند.")
+    if stats.get("report_available"):
+        minutes = stats.get("report_retention_minutes")
+        lines.append("گزارش کامل: /report" + (f" · تا {minutes} دقیقه در دسترس است." if minutes else ""))
     return "\n".join(lines)
 
 

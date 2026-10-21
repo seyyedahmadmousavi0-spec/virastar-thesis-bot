@@ -21,6 +21,7 @@ import checker
 from doc_guard import DocumentGuard, safe_filename, validate_document
 from bot_runtime import JobGate, ThreadLocalHTTP, env_integer, validated_base_url
 from report_artifacts import PRODUCT_VERSION, write_artifacts
+from report_store import ReportStore
 
 def _load_env_file():
     """اگر فایل .env کنار bot.py باشد، متغیرها را از آن می‌خواند (BALE_TOKEN=...)."""
@@ -58,6 +59,10 @@ WORKERS = _integer("WORKERS", 4, 1, 32)
 MAX_QUEUE = _integer("MAX_QUEUE", 8, 0, 1000)
 MAX_TEXT_CHARS = _integer("MAX_TEXT_CHARS", 50000, 100, 200000)
 HEALTH_STALE_SEC = _integer("HEALTH_STALE_SEC", 120, 45, 3600)
+MAX_COMMENTS = _integer("MAX_COMMENTS", 250, 1, 1000)
+REPORT_TTL_MINUTES = _integer("REPORT_TTL_MINUTES", 15, 1, 60)
+REPORT_CACHE_MB = _integer("REPORT_CACHE_MB", 32, 1, 128)
+PDF_ANNOTATION_EXPERIMENTAL = os.environ.get("PDF_ANNOTATION_EXPERIMENTAL", "0") == "1"
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 log = logging.getLogger("bot")
@@ -81,6 +86,8 @@ http = ThreadLocalHTTP(requests.Session)
 _stop_event = threading.Event()
 _last_poll_monotonic = None
 _health_server = None
+reports = ReportStore(ttl_seconds=REPORT_TTL_MINUTES * 60,
+                      max_bytes=REPORT_CACHE_MB * 1024 * 1024)
 
 WELCOME = (
     "سلام 👋\n"
@@ -92,7 +99,7 @@ WELCOME = (
     "• بررسی برخی نشانه‌های ساختاری و بخش‌های سند\n"
     "• ارجاع‌دهی درون‌متنی و تطبیق با فهرست منابع (ونکوور، هاروارد و APA)\n"
     "• صفحه‌آرایی فایل Word (حاشیه‌ها، فونت‌ها، تراز و شماره‌گذاری)\n"
-    "• علامت‌گذاری زرد روی خطاهای متنی در فایل Word همراه با کامنت‌های تفصیلی (بدون دستکاری متن اصلی)\n\n"
+    "• دریافت کپی Word با هایلایت و کامنت‌های کوتاه؛ پیشنهادها خودکار اعمال نمی‌شوند\n\n"
     "📌 انتخاب نوع سند:\n"
     "🎓 /thesis : پایان‌نامه و رساله دانشگاهی (پیش‌فرض)\n"
     "🏛 /tums : بررسی با پروفایل دانشگاه علوم پزشکی تهران\n"
@@ -100,7 +107,8 @@ WELCOME = (
     "🇬🇧 /english : بررسی متون و مقالات انگلیسی\n"
     "ℹ️ /status : مشاهده وضعیت جاری\n"
     "📖 /help : راهنمای کامل\n\n"
-    "📎 می‌توانید فایل Word (.docx) یا PDF ارسال کنید یا متن خود را مستقیماً در چت بنویسید."
+    "📎 فایل Word (.docx) یا PDF بفرستید یا متن را در چت بنویسید.\n"
+    "📋 /report گزارش کامل آخرین بررسی شما را می‌فرستد؛ /comments راهنمای کامنت‌هاست."
 )
 
 HELP = (
@@ -111,10 +119,12 @@ HELP = (
     "• دستور /article برای مقالات پژوهشی و علمی.\n"
     "• دستور /english برای بازبینی قاعده‌محور متون انگلیسی.\n\n"
     "۲) ارسال ورودی:\n"
-    "• فایل Word (.docx): خروجی پیش‌فرض گزارش است. برای دریافت کپی حاشیه‌نویسی‌شده، در توضیح فایل /annotate بنویسید. همچنین خلاصه‌ای در چت و فایل متنی گزارش ارسال خواهد شد.\n"
-    "• فایل PDF: متن استخراج شده و گزارش جامع ارزیابی صادر می‌شود (فایل‌های تصویری نیازمند OCR هستند).\n"
+    "• فایل Word (.docx): یک کپی با هایلایت و کامنت‌های کوتاه دریافت می‌کنید؛ دستور /annotate لازم نیست. فایل اصلی و متن تغییر نمی‌کنند.\n"
+    "• فایل PDF: خلاصه و گزارش صفحه‌دار؛ برای صفحات تصویری استخراج متن انجام نمی‌شود. نشانه‌گذاری PDF فقط در حالت آزمایشی میزبان و برای محل‌های قابل تطبیق انجام می‌شود.\n"
     "• متن مستقیم: یک یا چند بند از متن خود را بفرستید تا فوراً بررسی گردد.\n\n"
-    "۳) /settings تنظیمات و /privacy توضیح حریم خصوصی را نمایش می‌دهند.\n"
+    "۳) /report گزارش HTML و TXT آخرین بررسی شما، /report html یا /report txt فقط یک قالب را می‌فرستد.\n"
+    f"گزارش تا {REPORT_TTL_MINUTES} دقیقه در حافظه می‌ماند؛ بررسی جدید جای قبلی را می‌گیرد و راه‌اندازی مجدد یا پرشدن ظرفیت ممکن است آن را زودتر پاک کند.\n"
+    "۴) /comments روش دیدن کامنت‌ها، /forget حذف گزارش و /settings تنظیمات را نشان می‌دهد.\n"
     "🔒 فایل‌های موقت این پردازش پاک‌سازی می‌شوند؛ نگهداری داده در بله و میزبان تابع سیاست‌های آن‌هاست.\n"
     "نتایج پیشنهاد بازبینی‌اند؛ بررسی علمی محتوا، صحت منابع و استخراج PDF کامل یا قطعی نیست."
 )
@@ -123,7 +133,8 @@ MAIN_KEYBOARD = {
     "keyboard": [
         [{"text": "🎓 پایان‌نامه"}, {"text": "📑 مقاله پژوهشی"}],
         [{"text": "🇬🇧 متن انگلیسی"}, {"text": "ℹ️ وضعیت جاری"}],
-        [{"text": "📖 راهنما"}, {"text": "🔄 شروع مجدد"}]
+        [{"text": "📋 گزارش کامل"}, {"text": "💬 راهنمای کامنت‌ها"}],
+        [{"text": "📖 راهنما"}, {"text": "🗑 حذف گزارش"}]
     ],
     "resize_keyboard": True
 }
@@ -155,14 +166,16 @@ def call(method, **payload):
         raise BaleAPIError(f"{method}: transport failure") from exc
 
 
-def send(chat_id, text, reply_markup=MAIN_KEYBOARD):
+def send(chat_id, text, reply_markup=MAIN_KEYBOARD, receipt=None):
     parts = checker.split_message(text, 3800)
     for i, part in enumerate(parts):
         payload = {"chat_id": chat_id, "text": part}
         if i == len(parts) - 1 and reply_markup is not None:
             payload["reply_markup"] = reply_markup
         try:
-            call("sendMessage", **payload)
+            result = call("sendMessage", **payload)
+            if receipt is not None:
+                receipt.append(result)
             _bot_status["last_reply"] = {"time": time.strftime("%Y-%m-%d %H:%M:%S")}
         except Exception as e:
             log.warning("sendMessage failed (%s)", type(e).__name__)
@@ -207,8 +220,74 @@ def download(file_id, dest):
 
 
 # ---------------------------- پردازش اسناد ----------------------------
-def process_document(chat_id, doc, annotate_requested=False, mode=None):
+class Progress:
+    """One editable status message; a failed edit never loses the final result."""
+    def __init__(self, chat_id, text="⏳ فایل شما در حال بررسی است…"):
+        self.chat_id = chat_id
+        receipt = []
+        send(chat_id, text, reply_markup=None, receipt=receipt)
+        result = receipt[-1] if receipt else None
+        self.message_id = result.get("message_id") if isinstance(result, dict) else None
+
+    def update(self, text, final=False):
+        if self.message_id is not None:
+            try:
+                call("editMessageText", chat_id=self.chat_id,
+                     message_id=self.message_id, text=text)
+                return
+            except BaleAPIError:
+                pass
+        if final and not send(self.chat_id, text):
+            raise BaleAPIError("Could not deliver summary")
+
+
+COMMENTS_HELP = (
+    "💬 فایل «نسخهٔ بازبینی» را در Word باز کنید و از Review ← Show Comments کامنت‌ها را ببینید. "
+    "در نسخهٔ موبایل، نمایش کامنت‌ها معمولاً از منوی بازبینی یا علامت گفت‌وگو فعال می‌شود.\n"
+    "هایلایت، محل پیشنهاد است؛ داخل کامنت شناسهٔ قاعده، دلیل و پیشنهاد کوتاه آمده است.\n"
+    "A: اطمینان بالا · B: نیازمند بازبینی · C: مبهم و فقط برای بررسی دستی در گزارش. "
+    "این حروف شدت خطا یا درصد دقت نیستند.\n"
+    "هیچ پیشنهادی خودکار اعمال نشده است. گزارش کامل و علت درج‌نشدن بعضی کامنت‌ها: /report"
+)
+
+
+def _cache_reports(chat_id, sender_id, artifacts):
+    return reports.put(chat_id, sender_id,
+                       {kind: artifacts[kind].read_bytes() for kind in ("html", "txt")})
+
+
+def deliver_reports(chat_id, sender_id=None, kind="all"):
+    sender_id = chat_id if sender_id is None else sender_id
+    payloads = reports.get(chat_id, sender_id)
+    if not payloads:
+        send(chat_id, "گزارش فعالی برای شما در این گفت‌وگو موجود نیست؛ ممکن است منقضی یا پاک شده باشد. فایل یا متن را دوباره بفرستید.")
+        return
+    try:
+        with tempfile.TemporaryDirectory(prefix="review_report_") as tmp:
+            for extension in (("html", "txt") if kind == "all" else (kind,)):
+                from pathlib import Path
+                path = Path(tmp) / ("گزارش-بازبینی." + extension)
+                path.write_bytes(payloads[extension])
+                send_file(chat_id, path, "گزارش کامل آخرین بررسی شما؛ HTML را با مرورگر باز کنید." if extension == "html" else "گزارش کامل متنی آخرین بررسی شما")
+    except BaleAPIError:
+        send(chat_id, "ارسال گزارش به‌دلیل مشکل ارتباط با بله تکمیل نشد؛ کمی بعد /report را دوباره بزنید.")
+
+
+def _report_reaper():
+    while not _stop_event.wait(30):
+        reports.reap()
+
+
+def _failure_notice(chat_id, progress, text):
+    if progress is not None:
+        progress.update(text, final=True)
+    else:
+        send(chat_id, text)
+
+
+def process_document(chat_id, doc, annotate_requested=False, mode=None, sender_id=None, progress=None):
     tmp = None
+    sender_id = chat_id if sender_id is None else sender_id
     try:
         name = safe_filename(doc.get("file_name") or "file")
         tmp = tempfile.mkdtemp(prefix="thesis_")
@@ -226,7 +305,9 @@ def process_document(chat_id, doc, annotate_requested=False, mode=None):
             send(chat_id, f"❌ حجم فایل فراتر از سقف مجاز ({MAX_MB} مگابایت) است.")
             return
 
-        send(chat_id, "⏳ فایل دریافت شد؛ فرآیند ارزیابی علمی، نگارشی و ساختاری در حال اجراست…")
+        reports.delete(chat_id, sender_id)
+        progress = progress or Progress(chat_id)
+        progress.update("⏳ فایل دریافت شد؛ بررسی نگارشی و ساختاری در حال اجراست…")
         src = os.path.join(tmp, name)
         download(doc["file_id"], src)
         validate_document(src, "pdf" if is_pdf else "docx", MAX_MB * 1024 * 1024)
@@ -237,54 +318,87 @@ def process_document(chat_id, doc, annotate_requested=False, mode=None):
             analyze = checker.analyze_pdf if is_pdf else checker.analyze
             d, issues, stats = analyze(work_src, mode, rules)
             guard.verify_original_intact()
+            progress.update("⏳ بررسی انجام شد؛ خروجی بازبینی در حال آماده‌سازی است…")
+            output = None
+            if is_docx and d is not None:
+                out_docx = os.path.join(tmp, "نسخه-بازبینی-" + name)
+                checker.annotate(d, issues, out_docx, max_comments=MAX_COMMENTS, per_par=None)
+                stats["annotation_summary"] = getattr(d, "_last_annotation_summary", {})
+                stats["annotation_format"] = "docx"
+                if stats["annotation_summary"].get("output_created"):
+                    output = out_docx
+            elif is_pdf and PDF_ANNOTATION_EXPERIMENTAL and stats.get("analysis_status") != "failed":
+                from pdf_annotator import annotate_pdf
+                out_pdf = os.path.join(tmp, "نسخه-بازبینی-" + name)
+                stats["annotation_summary"] = annotate_pdf(work_src, issues, out_pdf, max_comments=MAX_COMMENTS)
+                stats["annotation_format"] = "pdf"
+                if stats["annotation_summary"].get("output_created"):
+                    output = out_pdf
+            guard.verify_original_intact()
             artifacts = write_artifacts(os.path.join(tmp, "reports"), issues, stats, rules,
                                         source_path=work_src,
-                                        text_report=checker.build_report(issues, stats, rules, examples=1000))
-            if not send(chat_id, checker.build_summary(issues, stats, rules)):
-                raise BaleAPIError("Could not deliver summary")
-            send_file(chat_id, artifacts["html"], "گزارش قابل جست‌وجو؛ فایل را با مرورگر باز کنید. پردازش این صفحه آفلاین است.")
-            send_file(chat_id, artifacts["txt"], "گزارش متنی بازبینی سند")
-            if annotate_requested and d is not None:
-                out_docx = os.path.join(tmp, "نسخه-بررسی‌شده-" + name)
-                if checker.annotate(d, issues, out_docx):
-                    send_file(chat_id, out_docx, "کپی Word با کامنت‌های بازبینی؛ متن پیشنهادها خودکار اعمال نشده است.")
-                    result = getattr(d, "_last_annotation_summary", {})
-                    if result.get("unapplied"):
-                        send(chat_id, f"{result['applied']} کامنت درج شد؛ سایر موارد در گزارش موجودند و لزوماً محل امنی برای نشانه‌گذاری ندارند.")
-                else:
-                    send(chat_id, "برای این سند محدودهٔ قابل‌اطمینانی برای درج کامنت پیدا نشد؛ جزئیات در گزارش موجود است.")
+                                        text_report=checker.build_report(issues, stats, rules))
+            cached = _cache_reports(chat_id, sender_id, artifacts)
+            if output:
+                send_file(chat_id, output, "نسخهٔ بازبینی؛ پیشنهادها خودکار اعمال نشده‌اند. راهنمای کامنت‌ها: /comments")
+            summary = checker.build_summary(issues, stats, rules)
+            if not output and is_docx and stats.get("analysis_status") != "failed":
+                summary += "\nخروجی Word آماده نشد؛ جزئیات در گزارش است."
+            if cached:
+                summary += f"\n📋 گزارش کامل: /report (تا {REPORT_TTL_MINUTES} دقیقه؛ آخرین بررسی شما)"
+            else:
+                summary += "\nگزارش برای دریافت بعدی در ظرفیت حافظه جا نشد؛ همین حالا ارسال می‌شود."
+            if not output and is_pdf:
+                send_file(chat_id, artifacts["txt"], "گزارش PDF با محل و شمارهٔ صفحه؛ بررسی علمی محتوا نیازمند بازبینی انسانی است.")
+            if not cached:
+                send_file(chat_id, artifacts["html"], "گزارش کامل؛ نسخه‌ای برای دریافت بعدی نگهداری نشد.")
+                if not (is_pdf and not output):
+                    send_file(chat_id, artifacts["txt"], "گزارش کامل متنی")
+            progress.update(summary, final=True)
 
     except BaleAPIError:
         log.warning("Document transport failed")
-        send(chat_id, "❌ دریافت فایل یا ارسال نتیجه به‌دلیل مشکل ارتباط با بله تکمیل نشد. "
+        _failure_notice(chat_id, progress, "❌ دریافت فایل یا ارسال نتیجه به‌دلیل مشکل ارتباط با بله تکمیل نشد. "
              "ممکن است بخشی از گزارش رسیده باشد؛ کمی بعد دوباره تلاش کنید.")
     except ValueError as e:
-        send(chat_id, f"❌ حجم فایل بیشتر از {MAX_MB} مگابایت است." if str(e) == "too_big"
+        _failure_notice(chat_id, progress, f"❌ حجم فایل بیشتر از {MAX_MB} مگابایت است." if str(e) == "too_big"
              else "❌ فایل ارسال‌شده قابل پردازش نبود.")
     except Exception:
         log.error("Document processing failed")
-        send(chat_id, "❌ متأسفانه در فرآیند بررسی فایل خطایی رخ داد. از صحت و سلامت فایل اطمینان حاصل کرده و دوباره تلاش فرمایید.")
+        _failure_notice(chat_id, progress, "❌ بررسی یا آماده‌سازی خروجی تکمیل نشد؛ کمی بعد دوباره تلاش کنید. این پیام به معنی خراب‌بودن فایل نیست.")
     finally:
         if tmp:
             shutil.rmtree(tmp, ignore_errors=True)
 
 
-def process_text_message(chat_id, text, mode=None):
+def process_text_message(chat_id, text, mode=None, sender_id=None, progress=None):
     """بررسی متن مستقیم ارسالی کاربر."""
     try:
+        sender_id = chat_id if sender_id is None else sender_id
+        reports.delete(chat_id, sender_id)
+        progress = progress or Progress(chat_id, "⏳ متن در حال بررسی است…")
         mode = mode or modes.get(chat_id, "thesis")
         rules = checker.load_rules(mode=mode)
         _, issues, stats = checker.analyze_text(text, mode, rules)
-        report = checker.build_report(issues, stats, rules, examples=20)
-        send(chat_id, report)
+        with tempfile.TemporaryDirectory(prefix="review_text_") as tmp:
+            artifacts = write_artifacts(tmp, issues, stats, rules,
+                                        text_report=checker.build_report(issues, stats, rules))
+            cached = _cache_reports(chat_id, sender_id, artifacts)
+            summary = checker.build_summary(issues, stats, rules)
+            if cached:
+                summary += f"\n📋 گزارش کامل: /report (تا {REPORT_TTL_MINUTES} دقیقه)"
+            else:
+                send_file(chat_id, artifacts["html"], "گزارش کامل؛ ظرفیت نگهداری برای دریافت بعدی کافی نبود.")
+                send_file(chat_id, artifacts["txt"], "گزارش کامل متنی")
+            progress.update(summary, final=True)
     except Exception:
         log.error("Direct text analysis failed")
-        send(chat_id, "❌ در بررسی متن مشکلی پیش آمد؛ لطفاً دوباره تلاش کنید.")
+        _failure_notice(chat_id, progress, "❌ در بررسی متن مشکلی پیش آمد؛ لطفاً دوباره تلاش کنید.")
 
 
 # ---------------------------- مدیریت پیام‌ها و دستورات ----------------------------
-def _submit_job(pool, chat_id, function, *args, **kwargs):
-    token, reason, wait = jobs.reserve(chat_id)
+def _submit_job(pool, chat_id, function, *args, _report_request=False, **kwargs):
+    token, reason, wait = jobs.reserve(chat_id, cooldown=2 if _report_request else None)
     if reason:
         replies = {
             "busy": "⏳ بررسی قبلی شما در صف یا در حال اجراست؛ لطفاً شکیبا باشید.",
@@ -294,6 +408,9 @@ def _submit_job(pool, chat_id, function, *args, **kwargs):
         }
         send(chat_id, replies[reason])
         return False
+
+    if function in (process_document, process_text_message):
+        kwargs["progress"] = Progress(chat_id, "⏳ درخواست ثبت شد؛ در صف بررسی…")
 
     def run():
         try:
@@ -326,6 +443,14 @@ def handle(update, pool):
     if not msg:
         return
     chat_id = msg["chat"]["id"]
+    sender_id = (msg.get("from") or {}).get("id")
+    if sender_id is None:
+        # Private messages have one owner. Unattributed group posts cannot
+        # retrieve another member's reports through a shared fallback identity.
+        if msg["chat"].get("type") not in (None, "private"):
+            send(chat_id, "برای حفظ دسترسی اختصاصی گزارش، فایل را در گفت‌وگوی خصوصی ربات بفرستید.")
+            return
+        sender_id = chat_id
     text = (msg.get("text") or "").strip()
     command = text.split(maxsplit=1)[0].split("@", 1)[0].lower() if text.startswith("/") else ""
     # Group commands addressed to another bot must not change this bot's mode.
@@ -356,6 +481,18 @@ def handle(update, pool):
     elif command == "/english" or text in ("🇬🇧 متن انگلیسی", "متن انگلیسی", "انگلیسی"):
         modes[chat_id] = "english"
         send(chat_id, "🇬🇧 الگوی «متن/مقاله انگلیسی» فعال شد. متن یا فایل انگلیسی خود را ارسال فرمایید.")
+    elif command == "/report" or text == "📋 گزارش کامل":
+        args = text.split()[1:] if command else []
+        if len(args) > 1 or (args and args[0].lower() not in {"html", "txt", "all"}):
+            send(chat_id, "گزارش آخرین بررسی شما: /report\nفقط یک قالب: /report html یا /report txt")
+            return
+        _submit_job(pool, chat_id, deliver_reports, sender_id=sender_id,
+                    kind=args[0].lower() if args else "all", _report_request=True)
+    elif command == "/comments" or text == "💬 راهنمای کامنت‌ها":
+        send(chat_id, COMMENTS_HELP)
+    elif command == "/forget" or text == "🗑 حذف گزارش":
+        reports.delete(chat_id, sender_id)
+        send(chat_id, "گزارش نگهداری‌شدهٔ شما در این گفت‌وگو پاک شد. اگر بررسی تازه‌ای در حال اجرا باشد، گزارش آن پس از پایان آماده می‌شود.")
     elif command in {"/status", "/settings"} or text in ("ℹ️ وضعیت جاری", "وضعیت جاری", "وضعیت"):
         cur_mode = modes.get(chat_id, "thesis")
         title_map = {
@@ -369,16 +506,21 @@ def handle(update, pool):
         send(chat_id, f"📌 حالت فعال شما: {title_map.get(cur_mode, cur_mode)}\n"
              f"وضعیت درخواست: {'در صف یا در حال اجرا' if is_busy else 'آماده دریافت'}\n"
              f"سقف فایل: {MAX_MB} مگابایت؛ سقف متن: {MAX_TEXT_CHARS:,} نویسه\n"
-             "حاشیه‌نویسی Word با /annotate در توضیح فایل فعال می‌شود.\n"
+             f"Word با کامنت، خروجی پیش‌فرض است؛ سقف کامنت: {MAX_COMMENTS}.\n"
+             f"گزارش کامل: /report؛ نگهداری در حافظه تا {REPORT_TTL_MINUTES} دقیقه.\n"
              "برای تغییر حالت از /thesis، /tums، /article یا /english استفاده کنید.")
     elif command == "/privacy":
         send(chat_id, "🔒 فایل شما برای بررسی به میزبان ربات منتقل می‌شود و فایل‌های موقت پس از پایان یا خطای پردازش پاک‌سازی می‌شوند. "
+             f"فقط گزارش آخرین بررسی (شامل شاهدهایی از متن) تا {REPORT_TTL_MINUTES} دقیقه در حافظهٔ میزبان می‌ماند؛ "
+             "پاک‌سازی دوره‌ای حداکثر ۳۰ ثانیه بعد از انقضا انجام می‌شود. "
+             "دسترسی به آن به فرستنده و همین گفت‌وگو محدود است؛ /forget آن را حذف می‌کند. "
+             "ظرفیت محدود، بررسی جدید و راه‌اندازی مجدد ممکن است گزارش را زودتر حذف کنند. "
              "این ربات متن سند یا شناسه کاربران را در گزارش سلامت منتشر نمی‌کند و سرویس هوش مصنوعی خارجی برای بررسی فراخوانی نمی‌کند. "
              "نگهداری نسخه‌های پیام و فایل در بله و زیرساخت میزبان تابع سیاست‌های آن‌هاست. "
              "پس از توقف ناگهانی سیستم ممکن است پاک‌سازی عادی کامل نشود. نتایج جایگزین بازبینی پژوهشگر نیستند.")
     elif command:
         send(chat_id, "این دستور شناخته نشد. /help راهنما و /settings تنظیمات فعلی را نشان می‌دهد. "
-             "برای حاشیه‌نویسی، /annotate را در توضیح فایل Word بنویسید.")
+             "Word به‌طور پیش‌فرض کامنت‌دار برمی‌گردد؛ /report گزارش کامل را می‌فرستد.")
     elif msg.get("document"):
         doc = msg["document"]
         name = doc.get("file_name") or ""
@@ -391,12 +533,12 @@ def handle(update, pool):
             return
         _submit_job(pool, chat_id, process_document, doc,
                     annotate_requested="/annotate" in (msg.get("caption") or "").split(),
-                    mode=modes.get(chat_id, "thesis"))
+                    mode=modes.get(chat_id, "thesis"), sender_id=sender_id)
     elif text:
         if len(text) > MAX_TEXT_CHARS:
             send(chat_id, f"سقف متن مستقیم {MAX_TEXT_CHARS:,} نویسه است؛ متن طولانی‌تر را در فایل ارسال کنید.")
             return
-        _submit_job(pool, chat_id, process_text_message, msg["text"], mode=modes.get(chat_id, "thesis"))
+        _submit_job(pool, chat_id, process_text_message, msg["text"], mode=modes.get(chat_id, "thesis"), sender_id=sender_id)
 
 
 def _health_payload(readiness=False):
@@ -493,6 +635,9 @@ def setup_commands():
             {"command": "status", "description": "مشاهده وضعیت جاری"},
             {"command": "settings", "description": "حالت و محدودیت‌های بررسی"},
             {"command": "privacy", "description": "حریم خصوصی و نگهداری فایل"},
+            {"command": "report", "description": "گزارش کامل آخرین بررسی شما"},
+            {"command": "comments", "description": "راهنمای دیدن کامنت‌های Word"},
+            {"command": "forget", "description": "حذف گزارش نگهداری‌شده"},
             {"command": "help", "description": "راهنمای کار با ربات"}
         ]
         call("setMyCommands", commands=commands)
@@ -526,6 +671,7 @@ def main():
             signal.signal(sig, lambda *_: _stop_event.set())
     try:
         _start_health_server()
+        threading.Thread(target=_report_reaper, daemon=True, name="report-expiry").start()
         if os.environ.get("KEEP_ALIVE_URL"):
             threading.Thread(target=_auto_keep_alive, daemon=True, name="keep-alive").start()
         me = call("getMe")
@@ -579,6 +725,7 @@ def main():
         jobs.stop()
         _bot_status["started"] = False
         pool.shutdown(wait=True, cancel_futures=True)
+        reports.close()
         if _health_server is not None:
             _health_server.shutdown()
             _health_server.server_close()
