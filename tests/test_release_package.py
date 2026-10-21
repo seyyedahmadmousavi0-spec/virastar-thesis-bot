@@ -16,8 +16,10 @@ class ReleasePackageTests(unittest.TestCase):
         self.root = Path(self.temporary.name)
         names = [*ROOT_FILES, "tests/benchmark_cases.json", "docs/PROFESSIONAL_UPGRADE.md",
                  "docs/STUDENT_EXPERIENCE.md",
+                 "docs/KASHAN_PROFILE.md",
                  "docs/DEPLOYMENT.md",
-                 "docs/benchmark_results.json", ".github/workflows/precision_tests.yml"]
+                 "docs/benchmark_results.json", ".github/workflows/precision_tests.yml",
+                 ".github/workflows/keep_alive.yml"]
         for name in names:
             path = self.root / name
             path.parent.mkdir(parents=True, exist_ok=True)

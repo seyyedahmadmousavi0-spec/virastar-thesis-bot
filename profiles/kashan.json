@@ -1,0 +1,144 @@
+{
+  "profile_id": "kashan",
+  "profile_version": "1",
+  "title": "دانشگاه کاشان",
+  "university": "دانشگاه کاشان",
+  "source_status": "user_provided_summary",
+  "source_verified": false,
+  "guideline_edition": "بهمن ۱۳۹۸؛ مطابق معرفی کاربر، بدون دسترسی به اصل دو راهنما",
+  "source_file_title": "پرامپت جامع ربات ویراستار دانشگاهی اختصاصی",
+  "source_file": "Pasted text.txt",
+  "source_sha256": "fef0307d8c1226bbf1bf50912082463b7ab2f79a52d34a3e4cf43ee50eb35f6d",
+  "source_review_scope": "خلاصهٔ ارائه‌شدهٔ کاربر، بخش‌های ۲ و ۵.۱ تا ۵.۵؛ اصل راهنماهای بهمن ۱۳۹۸ در دسترس نیست. بخش ۴ مربوط به منبع A ناشناس است و وارد این پروفایل نشده است.",
+  "currentness_status": "not_independently_verified",
+  "applicability": {
+    "confirmed_by_user": true,
+    "degrees": ["master", "phd"],
+    "default_scope": "unknown",
+    "missing_sections_require_full_document_scope": true,
+    "claim_official_approval": false
+  },
+  "sources": [
+    {
+      "id": "B",
+      "title": "راهنمای تهیه و تدوین پایان‌نامه کارشناسی ارشد دانشگاه کاشان",
+      "section": "خلاصهٔ کاربر، بخش‌های ۲، ۵.۱، ۵.۳، ۵.۴ و ۵.۵",
+      "date": "بهمن ۱۳۹۸",
+      "kind": "user_provided_summary",
+      "verified": false,
+      "applicable_degrees": ["master"],
+      "applies": true,
+      "reason": "کاربر دانشگاه خود را کاشان معرفی کرده و کاربرد این خلاصه را برای شخصی‌سازی خواسته است؛ اصل PDF و شماره صفحات بررسی نشده‌اند."
+    },
+    {
+      "id": "C",
+      "title": "راهنمای تهیه و تدوین رساله دکتری دانشگاه کاشان",
+      "section": "خلاصهٔ کاربر، بخش‌های ۲، ۵.۲، ۵.۳، ۵.۴ و ۵.۵",
+      "date": "بهمن ۱۳۹۸",
+      "kind": "user_provided_summary",
+      "verified": false,
+      "applicable_degrees": ["phd"],
+      "applies": true,
+      "reason": "فقط مفاد مستقل دکتری در خلاصه اعمال می‌شوند؛ ترتیب کامل صفحات ارشد به دکتری تعمیم داده نمی‌شود."
+    },
+    {
+      "id": "A",
+      "title": "راهنمای سه‌صفحه‌ای تهیه و تدوین پایان‌نامه و ثبت ایرانداک؛ دانشگاه نامشخص",
+      "section": "خلاصهٔ کاربر، بخش‌های ۲ و ۴",
+      "date": null,
+      "kind": "user_provided_summary",
+      "verified": false,
+      "applicable_degrees": [],
+      "applies": false,
+      "reason": "تعلق منبع A به دانشگاه کاشان تأیید نشده است؛ قواعد قلم ۱۲، حاشیهٔ ۳ سانتی‌متر، ۴ یا ۵ کلیدواژه، شماره‌گذاری منابع، CD و امور اداری از آن به کاشان منتسب نمی‌شوند."
+    }
+  ],
+  "official_context_links": [
+    {
+      "title": "مدیریت تحصیلات تکمیلی و استعدادهای درخشان دانشگاه کاشان",
+      "url": "https://graduate.kashanu.ac.ir/fa",
+      "checked_on": "2026-10-21",
+      "purpose": "تأیید نشانی رسمی واحد دانشگاه؛ تأییدکنندهٔ متن یا جاری‌بودن راهنماهای نگارش بهمن ۱۳۹۸ نیست."
+    },
+    {
+      "title": "آئین‌نامه‌های کارشناسی ارشد",
+      "url": "https://graduate.kashanu.ac.ir/fa/page/3940",
+      "checked_on": "2026-10-21",
+      "purpose": "صفحهٔ رسمی مقررات آموزشی؛ در بررسی انجام‌شده اصل راهنمای نگارش معرفی‌شده در منبع B یافت نشد."
+    },
+    {
+      "title": "آئین‌نامه‌های دکتری",
+      "url": "https://graduate.kashanu.ac.ir/fa/page/3941",
+      "checked_on": "2026-10-21",
+      "purpose": "صفحهٔ رسمی مقررات آموزشی؛ در بررسی انجام‌شده اصل راهنمای نگارش معرفی‌شده در منبع C یافت نشد."
+    }
+  ],
+  "degrees": {
+    "master": {
+      "title": "کارشناسی ارشد",
+      "document_title": "پایان‌نامه کارشناسی ارشد",
+      "source_id": "B",
+      "section_sequence": ["basmala", "persian_cover", "defense_minutes", "declaration", "dedication", "acknowledgements", "abstract_fa", "toc", "tables_list", "figures_list", "abbreviations", "chapters", "references", "appendices", "abstract_en", "english_cover"]
+    },
+    "phd": {
+      "title": "دکتری",
+      "document_title": "رساله دکتری",
+      "english_document_title": "Ph.D. Dissertation",
+      "source_id": "C",
+      "section_sequence": null,
+      "manual_checks": ["تطبیق الگوی رسمی صورت‌جلسه دکتری و اطلاعات داور خارج دانشگاه", "تطبیق ترتیب کامل صفحات با اصل راهنمای دکتری"]
+    }
+  },
+  "sections": [
+    {"id": "basmala", "name": "صفحه بسم‌الله", "degrees": ["master"], "source_id": "B", "requirement": "expected_in_full_document"},
+    {"id": "persian_cover", "name": "صفحه عنوان فارسی", "degrees": ["master", "phd"], "source_id": "B/C", "requirement": "expected_in_full_document"},
+    {"id": "defense_minutes", "name": "صورت‌جلسه دفاع", "degrees": ["master"], "source_id": "B", "requirement": "expected_in_full_document", "manual_details": ["امضاها، مهر و تطبیق فرم رسمی"]},
+    {"id": "declaration", "name": "تعهدنامه", "degrees": ["master"], "source_id": "B", "requirement": "expected_in_full_document", "manual_details": ["اصالت امضا و صحت ادعاهای تعهدنامه"]},
+    {"id": "dedication", "name": "صفحه تقدیم", "degrees": ["master"], "source_id": "B", "requirement": "optional"},
+    {"id": "acknowledgements", "name": "سپاسگزاری", "degrees": ["master"], "source_id": "B", "requirement": "expected_in_full_document"},
+    {"id": "abstract_fa", "name": "چکیده فارسی", "degrees": ["master"], "source_id": "B", "requirement": "expected_in_full_document"},
+    {"id": "toc", "name": "فهرست مطالب", "degrees": ["master"], "source_id": "B", "requirement": "expected_in_full_document"},
+    {"id": "tables_list", "name": "فهرست جدول‌ها", "degrees": ["master"], "source_id": "B", "requirement": "conditional_manual", "condition": "وجود جدول و شمول دستورالعمل رشته"},
+    {"id": "figures_list", "name": "فهرست شکل‌ها", "degrees": ["master"], "source_id": "B", "requirement": "conditional_manual", "condition": "وجود شکل و شمول دستورالعمل رشته"},
+    {"id": "abbreviations", "name": "فهرست نشانه‌های اختصاری", "degrees": ["master"], "source_id": "B", "requirement": "conditional_manual", "condition": "وجود نشانه‌های اختصاری و شمول دستورالعمل رشته"},
+    {"id": "chapters", "name": "فصل‌های پایان‌نامه", "degrees": ["master"], "source_id": "B", "requirement": "manual_review", "fixed_count": null},
+    {"id": "references", "name": "منابع و مراجع", "degrees": ["master", "phd"], "source_id": "B/C", "requirement": "expected_in_full_document"},
+    {"id": "appendices", "name": "پیوست‌ها", "degrees": ["master"], "source_id": "B", "requirement": "optional"},
+    {"id": "abstract_en", "name": "چکیده انگلیسی", "degrees": ["master"], "source_id": "B", "requirement": "expected_in_full_document"},
+    {"id": "english_cover", "name": "صفحه عنوان انگلیسی", "degrees": ["master", "phd"], "source_id": "B/C", "requirement": "expected_in_full_document"}
+  ],
+  "references": {
+    "style": "APA",
+    "edition": null,
+    "order": "alphabetical",
+    "source_sections": ["۵.۴"],
+    "online_verification": false,
+    "numeric_style_from_source_a": false
+  },
+  "unverified_format_requirements": {
+    "font_family": null,
+    "font_size_pt": null,
+    "page_size": null,
+    "margins_cm": null,
+    "line_spacing": null,
+    "lines_per_page": null,
+    "abstract_word_range": null,
+    "keyword_count_range": null,
+    "page_numbering": null,
+    "exact_chapter_count": null,
+    "reason": "در بخش ۵ خلاصهٔ ارائه‌شده عدد قابل انتسابی برای این موارد وجود ندارد. اعداد منبع A یا پروفایل عمومی قانون کاشان محسوب نمی‌شوند."
+  },
+  "administrative_requirements": {
+    "automatically_enforced": false,
+    "source_a_cd_requirements_applied": false,
+    "source_a_irandoc_requirements_applied": false,
+    "reason": "الزامات روز تحویل، ایرانداک، CD و تسویه‌حساب به تأیید مستقل منبع رسمی و پروندهٔ دانشجو نیاز دارند."
+  },
+  "safety": {
+    "rewrite_original_document": false,
+    "alter_scientific_content": false,
+    "guarantee_authenticity_or_plagiarism_free": false,
+    "invent_bibliographic_data": false,
+    "claim_final_university_compliance": false
+  }
+}

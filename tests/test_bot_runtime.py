@@ -38,7 +38,7 @@ class BotRuntimeTests(unittest.TestCase):
         self.pool = RecordingPool()
         for name, value in (("jobs", self.gate), ("busy", self.gate.busy),
                             ("last_job", self.gate.last_started), ("lock", self.gate.lock),
-                            ("modes", {}), ("_stop_event", threading.Event())):
+                            ("modes", {}), ("document_scopes", {}), ("_stop_event", threading.Event())):
             p = patch.object(bot, name, value)
             p.start()
             self.addCleanup(p.stop)
@@ -75,7 +75,7 @@ class BotRuntimeTests(unittest.TestCase):
             bot.handle(update, self.pool)
             bot.modes[1] = "english"
             self.pool.run()
-            analyze.assert_called_once_with(1, document, annotate_requested=True, mode="tums", sender_id=1, progress=unittest.mock.ANY)
+            analyze.assert_called_once_with(1, document, annotate_requested=True, mode="tums", sender_id=1, progress=unittest.mock.ANY, document_scope="full")
 
     def test_busy_protection_is_shared_by_text_and_document(self):
         with patch.object(bot, "process_text_message"):

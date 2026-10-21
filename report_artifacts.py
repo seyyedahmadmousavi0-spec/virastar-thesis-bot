@@ -12,7 +12,7 @@ import re
 from doc_guard import atomic_write
 
 SCHEMA_VERSION = "2.0"
-PRODUCT_VERSION = "2.1.0"
+PRODUCT_VERSION = "2.2.0"
 CONFIDENCE_LABELS = {"A": "اطمینان بالا", "B": "نیازمند بازبینی", "C": "مبهم"}
 CATEGORY_LABELS = {
     "general": "بازبینی عمومی", "english_grammar": "دستور زبان انگلیسی",
@@ -25,6 +25,12 @@ STORY_LABELS = {"body": "متن اصلی", "table": "جدول‌ها", "header":
                 "textbox": "جعبه‌متن", "pdf": "صفحه‌های PDF", "text": "متن ارسالی"}
 COVERAGE_LABELS = {"analyzed": "بررسی شد", "partial": "بخشی بررسی شد",
                    "present": "وجود دارد؛ بررسی نشد", "absent": "در سند وجود نداشت"}
+UNIVERSITY_CHECKLIST_LABELS = {
+    "detected": "نشانهٔ متنی یافت شد؛ تأیید قالب نیست",
+    "not_detected": "در متن استخراج‌شده یافت نشد؛ نیازمند بررسی",
+    "manual": "با اطلاعات موجود قابل تأیید نیست؛ بررسی دستی لازم است",
+    "optional": "در صورت شمول؛ بررسی نویسنده لازم است",
+}
 ANNOTATION_REASONS = {
     "ambiguous_excluded": "مورد مبهم؛ فقط برای بررسی دستی در گزارش",
     "protected_content": "تداخل با محتوای حفاظت‌شده", "unsupported_story": "درج امن کامنت در این بخش پشتیبانی نمی‌شود",
@@ -110,6 +116,143 @@ def safe_coverage(coverage):
     return result
 
 
+def safe_university_profile(profile):
+    """Keep the documented profile contract, never arbitrary nested configuration."""
+    if not isinstance(profile, dict) or profile.get("id") != "kashan":
+        return None
+    textual = {"id", "title", "degree_label", "source_label", "reference_style"}
+    safe = {key: value for key, value in profile.items() if key in textual and isinstance(value, str)}
+    degree = profile.get("degree")
+    scope = profile.get("document_scope")
+    safe["degree"] = degree if isinstance(degree, str) and degree in {"master", "phd", "unknown"} else "unknown"
+    safe["document_scope"] = scope if isinstance(scope, str) and scope in {"full", "fragment"} else "fragment"
+    # This release implements a supplied summary, not independently authenticated guides.
+    safe["source_status"] = "user_provided_summary"
+    for key in ("applied_sources", "limitations"):
+        values = profile.get(key, [])
+        safe[key] = [value for value in values if isinstance(value, str)] if isinstance(values, list) else []
+    safe["applied_sources"] = [value for value in safe["applied_sources"] if value in {"A", "B", "C"}]
+    safe["excluded_sources"] = []
+    for source in profile.get("excluded_sources", []) if isinstance(profile.get("excluded_sources"), list) else []:
+        if isinstance(source, dict):
+            safe["excluded_sources"].append({key: value for key, value in source.items()
+                                              if key in {"id", "reason"} and isinstance(value, str)})
+    safe["sources"] = []
+    source_keys = {"id", "title", "date", "section", "status", "scope", "note", "kind", "reason"}
+    for source in profile.get("sources", []) if isinstance(profile.get("sources"), list) else []:
+        if isinstance(source, dict):
+            item = {key: value for key, value in source.items()
+                    if key in source_keys and isinstance(value, str)}
+            item.update({key: value for key in ("verified", "applies")
+                         if isinstance((value := source.get(key)), bool)})
+            if isinstance(source.get("applicable_degrees"), list):
+                item["applicable_degrees"] = [degree for degree in source["applicable_degrees"]
+                                               if isinstance(degree, str) and degree in {"master", "phd"}]
+            safe["sources"].append(item)
+    return safe
+
+
+def safe_university_checklist(checklist):
+    """Checklist observations describe evidence, never university approval."""
+    safe = []
+    for item in checklist if isinstance(checklist, list) else []:
+        if not isinstance(item, dict):
+            continue
+        row = {key: value for key, value in item.items()
+               if key in {"id", "label", "detail", "source", "evidence", "location"} and isinstance(value, str)}
+        status = item.get("status")
+        row["status"] = status if isinstance(status, str) and status in UNIVERSITY_CHECKLIST_LABELS else "manual"
+        safe.append(row)
+    return safe
+
+
+def safe_university_reference_checks(checks):
+    """Export only the implemented local bibliography checks, not private parsing state."""
+    if not isinstance(checks, dict):
+        return None
+    status = checks.get("status")
+    safe = {"status": status if isinstance(status, str) and status in {"partial", "manual"} else "manual"}
+    if isinstance(checks.get("detail"), str):
+        safe["detail"] = checks["detail"]
+    count = checks.get("recognized_entries")
+    if isinstance(count, int) and not isinstance(count, bool):
+        safe["recognized_entries"] = max(0, count)
+    for key in ("alphabetical_checked", "online_verified"):
+        if isinstance(checks.get(key), bool):
+            safe[key] = checks[key]
+    if checks.get("style") == "APA":
+        safe["style"] = "APA"
+    if "edition" in checks and checks["edition"] is None:
+        safe["edition"] = None
+    return safe
+
+
+def university_profile_lines(stats):
+    """Plain-text profile section shared with the TXT report."""
+    profile = safe_university_profile(stats.get("university_profile"))
+    if profile is None:
+        return []
+    lines = ["", "پروفایل دانشگاهی: " + profile.get("title", "دانشگاه کاشان"),
+             "مقطع: " + profile.get("degree_label", "مشخص نشده"),
+             "مرجع: خلاصهٔ راهنماهای ارسالی کاربر؛ اعتبار رسمی و به‌روز بودن مستقلاً تأیید نشده است.",
+             "انتخاب این پروفایل به معنی تأیید دانشگاه، آمادگی نهایی یا صحت علمی سند نیست."]
+    if profile.get("reference_style"):
+        lines.append("سبک ارجاع: " + profile["reference_style"])
+    lines.append("دامنهٔ سند: " + ("فایل کامل" if profile["document_scope"] == "full" else "بخش یا متن محدود؛ نبود یک عنوان الزاماً نقص سند کامل نیست"))
+    lines.extend("محدودیت: " + value for value in profile["limitations"])
+    lines.append("منابع شیوه‌نامه؛ شناسه‌های منبع با سطح اطمینان A/B/C ایرادها متفاوت‌اند:")
+    for source in profile["sources"]:
+        identity = "منبع " + source.get("id", "نامشخص") + ": " + source.get("title", "عنوان ارائه نشده")
+        details = [source[key] for key in ("date", "section", "status", "note", "reason") if source.get(key)]
+        lines.append(identity + (" — " + "؛ ".join(details) if details else ""))
+    if profile["applied_sources"]:
+        lines.append("منابع منتخب این مقطع: " + "، ".join(profile["applied_sources"]))
+    for source in profile["excluded_sources"]:
+        lines.append("منبع اجرا‌نشده " + source.get("id", "نامشخص") + ": " + source.get("reason", "دامنهٔ کاربرد تأیید نشده"))
+    reference_checks = safe_university_reference_checks(stats.get("university_reference_checks"))
+    if reference_checks is not None:
+        status = "بررسی محدود و محلی" if reference_checks["status"] == "partial" else "با اطلاعات موجود قابل تأیید نیست؛ بررسی دستی لازم است"
+        lines.append("وضعیت بررسی منابع: " + status)
+        if reference_checks.get("detail"):
+            lines.append("جزئیات بررسی منابع: " + reference_checks["detail"])
+        if "recognized_entries" in reference_checks:
+            lines.append("مدخل‌های دارای الگوی قابل تشخیص نام/سال: " + str(reference_checks["recognized_entries"]))
+        if "alphabetical_checked" in reference_checks:
+            lines.append("ترتیب الفبایی: " + ("فقط برای مدخل‌های قابل تشخیص، محلی بررسی شد" if reference_checks["alphabetical_checked"] else "قابل بررسی مطمئن نبود؛ تأیید نشده است"))
+        lines.append("این بررسی، انطباق کامل با APA یا صحت اطلاعات منابع را تأیید نمی‌کند؛ ویرایش APA تعیین نشده است.")
+        if reference_checks.get("online_verified") is False:
+            lines.append("راستی‌آزمایی آنلاین منابع انجام نشده است.")
+    checklist = safe_university_checklist(stats.get("university_checklist"))
+    if checklist:
+        lines.append("چک‌لیست شواهد و بررسی دستی؛ یافتن متن، امضا، قالب یا صحت محتوا را تأیید نمی‌کند:")
+    for item in checklist:
+        lines.append("• " + item.get("label", item.get("id", "مورد چک‌لیست")) + ": " + UNIVERSITY_CHECKLIST_LABELS[item["status"]])
+        for key, label in (("detail", "توضیح"), ("source", "مستند"), ("location", "محل"), ("evidence", "شاهد متنی")):
+            if item.get(key):
+                lines.append("  " + label + ": " + item[key])
+    return lines
+
+
+def _university_profile_html(stats):
+    profile = safe_university_profile(stats.get("university_profile"))
+    if profile is None:
+        return ""
+    # Use escaped data in text nodes only; no profile data becomes HTML or a URL.
+    lines = university_profile_lines(stats)
+    lead = ''.join('<p>' + escape(line) + '</p>' for line in lines[2:]
+                   if not line.startswith(("• ", "  ")) and line and not line.startswith("چک‌لیست"))
+    checklist = safe_university_checklist(stats.get("university_checklist"))
+    rows = []
+    for item in checklist:
+        details = ''.join('<p><strong>' + label + ': </strong><span dir="auto">' + escape(item[key]) + '</span></p>'
+                          for key, label in (("detail", "توضیح"), ("source", "مستند"), ("location", "محل"), ("evidence", "شاهد متنی")) if item.get(key))
+        rows.append('<tr><th scope="row">' + escape(item.get("label", item.get("id", "مورد چک‌لیست")))
+                    + '</th><td>' + escape(UNIVERSITY_CHECKLIST_LABELS[item["status"]]) + details + '</td></tr>')
+    table = ('<h3>چک‌لیست شواهد و بررسی دستی</h3><p class="muted">یافتن متن، امضا، قالب یا صحت محتوا را تأیید نمی‌کند.</p>'
+             '<table><thead><tr><th>موضوع</th><th>نتیجه و مستند</th></tr></thead><tbody>' + ''.join(rows) + '</tbody></table>') if rows else ''
+    return '<section class="notes university-profile"><h2>پروفایل دانشگاهی: ' + escape(profile.get("title", "دانشگاه کاشان")) + '</h2>' + lead + table + '</section>'
+
+
 def report_data(issues, stats, rules):
     """Export findings and provenance without local filesystem paths or configuration text."""
     encoded_rules = json.dumps(rules, sort_keys=True, ensure_ascii=False).encode("utf-8")
@@ -140,6 +283,13 @@ def report_data(issues, stats, rules):
         safe_stats["coverage"] = safe_coverage(safe_stats["coverage"])
     if annotation is not None:
         safe_stats["annotation_summary"] = annotation
+    profile = safe_university_profile(stats.get("university_profile"))
+    if profile is not None:
+        safe_stats["university_profile"] = profile
+        safe_stats["university_checklist"] = safe_university_checklist(stats.get("university_checklist"))
+        reference_checks = safe_university_reference_checks(stats.get("university_reference_checks"))
+        if reference_checks is not None:
+            safe_stats["university_reference_checks"] = reference_checks
     counts = dict(Counter(i.confidence for i in issues))
     counts["C"] = ambiguous_count(issues, stats, rules)
     return {
@@ -269,6 +419,7 @@ table{width:100%;border-collapse:collapse}th,td{text-align:right;border-bottom:1
 </style></head><body><main class="wrap"><header><div class="eyebrow">ویراستار پژوهش / گزارش بازبینی</div>
 <h1>پیشنهادهای بازبینی، تصمیم با نویسنده</h1><p class="muted">محل هر مورد تا حد قابل تأیید مشخص شده است. هیچ پیشنهادی به‌صورت خودکار اعمال نشده است.</p>'''
     + '<p class="muted">نسخهٔ موتور: ' + escape(data["product_version"]) + ' · زمان UTC: <time dir="ltr">' + escape(data["generated_at"]) + '</time></p></header>'
+    + _university_profile_html(data["stats"])
     + '<section class="stats" aria-label="تعداد نتایج">' + stat_cards + '</section>'
     + manual_note + annotation_section + coverage_section
     + '<div class="toolbar"><input id="query" type="search" placeholder="جست‌وجو در شاهد، قاعده و پیشنهاد" aria-label="جست‌وجوی نتایج">'

@@ -80,6 +80,7 @@ _bot_status = {
 }
 
 modes = {}        # chat_id -> "tums" | "thesis" | "article" | "english"
+document_scopes = {}  # Explicit full-document / fragment scope for Kashan reviews.
 jobs = JobGate(WORKERS + MAX_QUEUE, COOLDOWN)
 busy, last_job, lock = jobs.busy, jobs.last_started, jobs.lock
 http = ThreadLocalHTTP(requests.Session)
@@ -103,6 +104,7 @@ WELCOME = (
     "📌 انتخاب نوع سند:\n"
     "🎓 /thesis : پایان‌نامه و رساله دانشگاهی (پیش‌فرض)\n"
     "🏛 /tums : بررسی با پروفایل دانشگاه علوم پزشکی تهران\n"
+    "🏛 /kashan : دانشگاه کاشان؛ انتخاب ارشد یا دکتری\n"
     "📑 /article : مقاله پژوهشی / علمی\n"
     "🇬🇧 /english : بررسی متون و مقالات انگلیسی\n"
     "ℹ️ /status : مشاهده وضعیت جاری\n"
@@ -116,6 +118,8 @@ HELP = (
     "۱) انتخاب نوع سند:\n"
     "• دستور /thesis برای پایان‌نامه‌ها و رساله‌ها (پیش‌فرض).\n"
     "• دستور /tums برای پروفایل دانشگاه علوم پزشکی تهران؛ انطباق قطعی نیازمند بازبینی شیوه‌نامه است.\n"
+    "• دکمهٔ «دانشگاه کاشان» یا /kashan: انتخاب کارشناسی ارشد یا دکتری و سند کامل یا بخشی از آن.\n"
+    "  انتخاب مستقیم: /kashan_master و /kashan_phd؛ /kashan_info مرجع و محدودیت‌ها را نشان می‌دهد.\n"
     "• دستور /article برای مقالات پژوهشی و علمی.\n"
     "• دستور /english برای بازبینی قاعده‌محور متون انگلیسی.\n\n"
     "۲) ارسال ورودی:\n"
@@ -132,12 +136,38 @@ HELP = (
 MAIN_KEYBOARD = {
     "keyboard": [
         [{"text": "🎓 پایان‌نامه"}, {"text": "📑 مقاله پژوهشی"}],
+        [{"text": "🏛 دانشگاه کاشان"}],
         [{"text": "🇬🇧 متن انگلیسی"}, {"text": "ℹ️ وضعیت جاری"}],
         [{"text": "📋 گزارش کامل"}, {"text": "💬 راهنمای کامنت‌ها"}],
         [{"text": "📖 راهنما"}, {"text": "🗑 حذف گزارش"}]
     ],
     "resize_keyboard": True
 }
+
+KASHAN_MODE_TITLES = {
+    "kashan": "دانشگاه کاشان؛ مقطع هنوز انتخاب نشده",
+    "kashan_master": "دانشگاه کاشان — کارشناسی ارشد",
+    "kashan_phd": "دانشگاه کاشان — دکتری",
+}
+KASHAN_KEYBOARD = {
+    "keyboard": [
+        [{"text": "🎓 کاشان — کارشناسی ارشد"}, {"text": "🎓 کاشان — دکتری"}],
+        [{"text": "📄 کاشان — سند کامل"}, {"text": "📑 کاشان — بخشی از سند"}],
+        [{"text": "ℹ️ راهنمای کاشان"}, {"text": "⬅️ منوی اصلی"}],
+    ],
+    "resize_keyboard": True,
+}
+KASHAN_GUIDANCE = (
+    "🏛 پروفایل دانشگاه کاشان\n"
+    "مبنای این پروفایل، خلاصهٔ راهنماهای ارشد و دکتری بهمن ۱۳۹۸ در مشخصات ارائه‌شدهٔ مالک ربات است؛ "
+    "اعتبار آخرین نسخه و الزامات رشته باید با تحصیلات تکمیلی تطبیق داده شود.\n"
+    "ساختار و نشانه‌های قابل استخراج، سازگاری مقطع و منابع با رویکرد APA بررسی می‌شوند؛ نسخهٔ APA حدس زده نمی‌شود. "
+    "تقدیم اختیاری است و نمونهٔ سه فصل، تعداد اجباری فصل‌ها محسوب نمی‌شود.\n"
+    "قلم ۱۲، حاشیهٔ ۳ سانتی‌متر و سایر قواعد راهنمای سه‌صفحه‌ای با دانشگاه نامشخص، الزام کاشان تلقی نمی‌شوند. "
+    "امضا، مهر، صفحه‌بندی واقعی، اعتبار علمی و الزامات روز ایرانداک به بررسی انسانی یا مدرک معتبر نیاز دارند.\n"
+    "برای یک فصل یا چکیده، گزینهٔ «بخشی از سند» یا /scope part را انتخاب کنید تا نبود صفحات یک پایان‌نامهٔ کامل ایراد محسوب نشود. "
+    "بازگشت به سند کامل: /scope full. فایل اصلی بازنویسی نمی‌شود."
+)
 
 
 # ---------------------------- API بله ----------------------------
@@ -285,7 +315,7 @@ def _failure_notice(chat_id, progress, text):
         send(chat_id, text)
 
 
-def process_document(chat_id, doc, annotate_requested=False, mode=None, sender_id=None, progress=None):
+def process_document(chat_id, doc, annotate_requested=False, mode=None, sender_id=None, progress=None, document_scope="full"):
     tmp = None
     sender_id = chat_id if sender_id is None else sender_id
     try:
@@ -293,6 +323,8 @@ def process_document(chat_id, doc, annotate_requested=False, mode=None, sender_i
         tmp = tempfile.mkdtemp(prefix="thesis_")
         mode = mode or modes.get(chat_id, "thesis")
         rules = checker.load_rules(mode=mode)
+        if mode in KASHAN_MODE_TITLES:
+            rules["document_scope"] = document_scope
         rules["max_input_bytes"] = MAX_MB * 1024 * 1024
         is_docx = name.lower().endswith(".docx")
         is_pdf = name.lower().endswith(".pdf")
@@ -475,6 +507,44 @@ def handle(update, pool):
     elif command == "/tums":
         modes[chat_id] = "tums"
         send(chat_id, "🏛 پروفایل دانشگاه علوم پزشکی تهران فعال شد. نتایج شیوه‌نامه برای بازبینی ارائه می‌شوند.")
+    elif command == "/kashan" or text in ("🏛 دانشگاه کاشان", "دانشگاه کاشان", "کاشان"):
+        args = text.split()[1:] if command else []
+        choices = {"master": "kashan_master", "phd": "kashan_phd"}
+        if len(args) > 1 or (args and args[0].lower() not in choices):
+            send(chat_id, "دانشگاه کاشان: /kashan\nانتخاب مستقیم: /kashan master یا /kashan phd", reply_markup=KASHAN_KEYBOARD)
+            return
+        selected = choices[args[0].lower()] if args else "kashan"
+        modes[chat_id] = selected
+        document_scopes.setdefault(chat_id, "fragment")
+        selection = ("🏛 " + KASHAN_MODE_TITLES[selected] + " فعال شد. دامنهٔ سند را مشخص کنید؛ سپس فایل را بفرستید.\n"
+                     if args else "🏛 دانشگاه کاشان انتخاب شد. مقطع را از دکمه‌ها انتخاب کنید؛ سپس مشخص کنید سند کامل است یا بخشی از آن.\n")
+        send(chat_id, selection +
+             "مبنای پروفایل، مشخصات ارائه‌شدهٔ مالک ربات است؛ /kashan_info منابع و محدودیت‌ها را نشان می‌دهد.", reply_markup=KASHAN_KEYBOARD)
+    elif command in {"/kashan_master", "/kashan_phd"} or text in ("🎓 کاشان — کارشناسی ارشد", "🎓 کاشان — دکتری"):
+        is_phd = command == "/kashan_phd" or text == "🎓 کاشان — دکتری"
+        modes[chat_id] = "kashan_phd" if is_phd else "kashan_master"
+        scope = document_scopes.setdefault(chat_id, "fragment")
+        send(chat_id, "🏛 " + KASHAN_MODE_TITLES[modes[chat_id]] + " فعال شد.\n"
+             + ("دامنهٔ فعلی: سند کامل." if scope == "full" else "دامنهٔ فعلی: بخشی از سند.")
+             + " در صورت نیاز دامنه را از دکمه‌ها تغییر دهید؛ سپس فایل را بفرستید.\n"
+             "مبنای قواعد و موارد قابل تأیید نیست: /kashan_info", reply_markup=KASHAN_KEYBOARD)
+    elif command == "/scope" or text in ("📄 کاشان — سند کامل", "📑 کاشان — بخشی از سند"):
+        if modes.get(chat_id) not in KASHAN_MODE_TITLES:
+            send(chat_id, "ابتدا دانشگاه کاشان را از /kashan انتخاب کنید.")
+            return
+        args = text.split()[1:] if command else []
+        options = {"full": "full", "part": "fragment", "fragment": "fragment"}
+        if command and (len(args) != 1 or args[0].lower() not in options):
+            send(chat_id, "سند کامل: /scope full\nیک فصل یا بخشی از سند: /scope part", reply_markup=KASHAN_KEYBOARD)
+            return
+        scope = options[args[0].lower()] if command else ("full" if text == "📄 کاشان — سند کامل" else "fragment")
+        document_scopes[chat_id] = scope
+        send(chat_id, "دامنهٔ بررسی کاشان: " + ("سند کامل" if scope == "full" else "بخشی از سند؛ نبود بخش‌های یک پایان‌نامهٔ کامل ایراد محسوب نمی‌شود")
+             + ". فایل را بفرستید.", reply_markup=KASHAN_KEYBOARD)
+    elif command == "/kashan_info" or text == "ℹ️ راهنمای کاشان":
+        send(chat_id, KASHAN_GUIDANCE, reply_markup=KASHAN_KEYBOARD)
+    elif text == "⬅️ منوی اصلی":
+        send(chat_id, "منوی اصلی؛ حالت انتخاب‌شده حفظ شد. فایل یا متن خود را بفرستید.")
     elif command == "/article" or text in ("📑 مقاله پژوهشی", "مقاله پژوهشی", "مقاله"):
         modes[chat_id] = "article"
         send(chat_id, "📑 الگوی «مقاله علمی/پژوهشی» فعال شد. فایل Word، PDF یا متن خود را ارسال کنید.")
@@ -501,14 +571,20 @@ def handle(update, pool):
             "article": "مقاله پژوهشی 📑",
             "english": "متن انگلیسی 🇬🇧"
         }
+        title_map.update(KASHAN_MODE_TITLES)
         with lock:
             is_busy = chat_id in busy
+        scope_description = ""
+        if cur_mode in KASHAN_MODE_TITLES:
+            scope_description = ("دامنهٔ کاشان: " + ("سند کامل" if document_scopes.get(chat_id, "fragment") == "full" else "بخشی از سند")
+                                 + "; تغییر: /scope full یا /scope part\n")
         send(chat_id, f"📌 حالت فعال شما: {title_map.get(cur_mode, cur_mode)}\n"
              f"وضعیت درخواست: {'در صف یا در حال اجرا' if is_busy else 'آماده دریافت'}\n"
              f"سقف فایل: {MAX_MB} مگابایت؛ سقف متن: {MAX_TEXT_CHARS:,} نویسه\n"
              f"Word با کامنت، خروجی پیش‌فرض است؛ سقف کامنت: {MAX_COMMENTS}.\n"
+             + scope_description +
              f"گزارش کامل: /report؛ نگهداری در حافظه تا {REPORT_TTL_MINUTES} دقیقه.\n"
-             "برای تغییر حالت از /thesis، /tums، /article یا /english استفاده کنید.")
+             "انتخاب حالت: /thesis، /tums، /kashan، /article یا /english.")
     elif command == "/privacy":
         send(chat_id, "🔒 فایل شما برای بررسی به میزبان ربات منتقل می‌شود و فایل‌های موقت پس از پایان یا خطای پردازش پاک‌سازی می‌شوند. "
              f"فقط گزارش آخرین بررسی (شامل شاهدهایی از متن) تا {REPORT_TTL_MINUTES} دقیقه در حافظهٔ میزبان می‌ماند؛ "
@@ -533,7 +609,9 @@ def handle(update, pool):
             return
         _submit_job(pool, chat_id, process_document, doc,
                     annotate_requested="/annotate" in (msg.get("caption") or "").split(),
-                    mode=modes.get(chat_id, "thesis"), sender_id=sender_id)
+                    mode=modes.get(chat_id, "thesis"), sender_id=sender_id,
+                    document_scope=("fragment" if "/part" in (msg.get("caption") or "").split()
+                                    else document_scopes.get(chat_id, "fragment" if modes.get(chat_id) in KASHAN_MODE_TITLES else "full")))
     elif text:
         if len(text) > MAX_TEXT_CHARS:
             send(chat_id, f"سقف متن مستقیم {MAX_TEXT_CHARS:,} نویسه است؛ متن طولانی‌تر را در فایل ارسال کنید.")
@@ -630,6 +708,11 @@ def setup_commands():
             {"command": "start", "description": "شروع کار با ربات"},
             {"command": "thesis", "description": "بررسی پایان‌نامه و رساله"},
             {"command": "tums", "description": "پروفایل دانشگاه علوم پزشکی تهران"},
+            {"command": "kashan", "description": "دانشگاه کاشان؛ انتخاب مقطع"},
+            {"command": "kashan_master", "description": "کاشان — کارشناسی ارشد"},
+            {"command": "kashan_phd", "description": "کاشان — دکتری"},
+            {"command": "kashan_info", "description": "منابع و محدودیت‌های پروفایل کاشان"},
+            {"command": "scope", "description": "کاشان؛ سند کامل یا بخشی از سند"},
             {"command": "article", "description": "بررسی مقاله پژوهشی/علمی"},
             {"command": "english", "description": "بررسی متون انگلیسی"},
             {"command": "status", "description": "مشاهده وضعیت جاری"},

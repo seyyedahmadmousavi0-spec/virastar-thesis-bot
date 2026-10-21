@@ -24,13 +24,15 @@ import academic_checker
 import en_checker
 import pdf_handler
 import tums_checker
+import kashan_checker
 from analysis_model import ConfidenceLevel, Issue, OffsetMapper
 from doc_guard import DocumentGuard, safe_filename, sha256_file, validate_document, immutable_input
 from protected_content import ProtectedContentDetector
 import safe_annotator
 from rule_registry import FindingBuffer, bounded_findings
 from report_artifacts import (ANNOTATION_REASONS, COVERAGE_LABELS, STORY_LABELS,
-                              ambiguous_count, annotation_format_label, category_label, location_label, safe_annotation_summary)
+                              ambiguous_count, annotation_format_label, category_label, location_label, safe_annotation_summary,
+                              university_profile_lines)
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 ZWNJ = "\u200c"
@@ -194,7 +196,7 @@ RULE_TITLES = {
 # ابزارهای کمکی
 # ----------------------------------------------------------------------------
 def load_rules(path=None, mode="thesis"):
-    """بارگذاری قوانین پایه و ادغام با پروفایل اختصاصی در صورت انتخاب TUMS."""
+    """Load independent university profiles only when their mode is selected."""
     base_path = path or os.path.join(HERE, "rules.json")
     with open(base_path, encoding="utf-8") as f:
         rules = json.load(f)
@@ -219,6 +221,8 @@ def load_rules(path=None, mode="thesis"):
                         "required_sections": rules["modes"]["thesis"]["required_sections"],
                         "recommended_sections": rules["modes"]["thesis"].get("recommended_sections", [])
                     }
+    elif mode in kashan_checker.MODES:
+        rules = kashan_checker.apply_profile(rules, mode)
     elif mode == "english":
         if "english" not in rules["modes"]:
             rules["modes"]["english"] = {
@@ -232,7 +236,12 @@ def load_rules(path=None, mode="thesis"):
 
 def _prepare_rules(rules, mode):
     from rule_registry import validate_rules
-    return load_rules(mode=mode) if rules is None else validate_rules(copy.deepcopy(rules), mode)
+    if rules is None:
+        return load_rules(mode=mode)
+    selected = copy.deepcopy(rules)
+    if mode in kashan_checker.MODES:
+        selected = kashan_checker.apply_profile(selected, mode)
+    return validate_rules(selected, mode)
 
 
 def _finish_analysis(issues, stats, started, rules=None):
@@ -720,6 +729,8 @@ def _check_text(par_index, text, loc, rules, in_refs=False, in_declaration=False
 # ----------------------------------------------------------------------------
 @bounded_findings
 def check_page(doc, rules, mode="thesis"):
+    if not rules.get("profile_checks", {}).get("page", True):
+        return []
     out = FindingBuffer()
     cfg = rules["page"]
     tol, mtol = cfg["size_tolerance_cm"], cfg["margin_tolerance_cm"]
@@ -755,6 +766,8 @@ def check_page(doc, rules, mode="thesis"):
 
 @bounded_findings
 def check_body_format(doc, rules, ctx):
+    if not rules.get("profile_checks", {}).get("body_format", True):
+        return []
     out = FindingBuffer()
     b = rules["body"]
     for i, p, heading in ctx:
@@ -865,6 +878,8 @@ def find_section(paragraphs, patterns):
 
 @bounded_findings
 def check_structure(doc, rules, mode, stats):
+    if not rules.get("profile_checks", {}).get("generic_structure", True):
+        return []
     out = FindingBuffer()
     ps = doc.paragraphs
     m = rules["modes"].get(mode, rules["modes"].get("thesis", {}))
@@ -1188,9 +1203,13 @@ def analyze(path, mode="thesis", rules=None):
 
     issues += check_page(doc, rules, mode=mode)
     issues += check_body_format(doc, rules, ctx)
-    issues += check_fields(doc)
+    if mode not in kashan_checker.MODES:
+        issues += check_fields(doc)
     issues += check_structure(doc, rules, mode, stats)
     issues += cit_issues
+    if mode in kashan_checker.MODES:
+        stats["images"] = len(doc.inline_shapes)
+        issues += kashan_checker.check_document(doc, blocks, stats, rules)
 
     # راستی‌آزمایی عدم تغییر فایل ورودی در پایان پردازش
     post_hash = sha256_file(path)
@@ -1241,6 +1260,8 @@ def analyze_pdf(pdf_path, mode="thesis", rules=None):
         stats["analysis_error_code"] = extracted.get("error_code", "read_error")
         issues.append(Issue("pdf_read_error", "error", extracted.get("error", "خطا در خواندن فایل PDF"),
                             confidence=ConfidenceLevel.HIGH_A.value))
+        if mode in kashan_checker.MODES:
+            kashan_checker.check_document(None, [], stats, rules)
         return None, _finish_analysis(issues, stats, started, rules), stats
 
     if extracted.get("no_text_document", extracted.get("is_scanned")):
@@ -1252,6 +1273,8 @@ def analyze_pdf(pdf_path, mode="thesis", rules=None):
         stats["total_pages"] = extracted.get("total_pages", 0)
         stats["extraction_pages"] = [{"page": p["page_num"], "quality": p["quality"], "warnings": p["quality_warnings"]}
                                       for p in extracted.get("pages", [])]
+        if mode in kashan_checker.MODES:
+            kashan_checker.check_document(None, [], stats, rules)
         return None, _finish_analysis(issues, stats, started, rules), stats
 
     all_paragraphs = []
@@ -1306,6 +1329,13 @@ def analyze_pdf(pdf_path, mode="thesis", rules=None):
     for ci in cohesion_issues:
         issues.append(ci)
 
+    if mode in kashan_checker.MODES:
+        profile_blocks = [{**block, "story": "pdf", "location": f"صفحه {page['page_num']}",
+                           "source_part": f"pdf/page/{page['page_num']}",
+                           "extraction_status": "pdf_reading_order_unverified"}
+                          for page in extracted.get("pages", []) for block in page.get("blocks", [])]
+        issues += kashan_checker.check_document(None, profile_blocks, stats, rules)
+
     # راستی‌آزمایی عدم تغییر فایل اصلی PDF
     post_hash = sha256_file(pdf_path)
     if pre_hash != post_hash:
@@ -1327,6 +1357,8 @@ def analyze_text(raw_text, mode="thesis", rules=None):
     """بررسی متن مستقیم وارد شده در چت بله."""
     started = time.monotonic()
     rules = _prepare_rules(rules, mode)
+    if mode in kashan_checker.MODES:
+        rules["document_scope"] = "fragment"
     if len(raw_text) > rules.get("max_document_chars", 4_000_000):
         raise ValueError("Text exceeds its document analysis budget")
     issues, stats = [], {"mode": mode, "is_raw_text": True, "ambiguous_candidates": 0}
@@ -1362,6 +1394,8 @@ def analyze_text(raw_text, mode="thesis", rules=None):
     stats["source_chars"] = len(raw_text)
     stats["analysis_text_sha256"] = hashlib.sha256(raw_text.encode("utf-8")).hexdigest()
     stats["protected_content_audit"] = _protected_audit(paragraphs, rules.get("max_analysis_block_chars", 200000))
+    if mode in kashan_checker.MODES:
+        issues += kashan_checker.check_document(None, [raw_text], stats, rules)
     return None, _finish_analysis(issues, stats, started, rules), stats
 
 
@@ -1395,6 +1429,7 @@ def build_report(issues, stats, rules, examples=None):
         lines.append("❌ بررسی سند تکمیل نشد؛ متن قابل‌اعتماد برای ارزیابی در دسترس نبود.")
     elif stats.get("analysis_status") == "partial":
         lines.append("⚠️ بررسی بخشی از سند انجام شد؛ بخش‌های بررسی‌نشده و محدودیت‌ها را در ادامه ببینید.")
+    lines.extend(university_profile_lines(stats))
     ambiguous = ambiguous_count(issues, stats, rules)
     if ambiguous is None:
         lines.append("• تعداد موارد مبهمِ کنارگذاشته‌شده ثبت نشده است؛ صفر فرض نشده‌اند.")
@@ -1521,6 +1556,9 @@ def build_summary(issues, stats, rules):
         title,
         f"A، اطمینان بالا: {conf['A']} · B، نیازمند بازبینی: {conf['B']} · C، مبهم: {ambiguous if ambiguous is not None else 'نامشخص'}",
     ]
+    if stats.get("mode"):
+        mode_title = rules.get("modes", {}).get(stats["mode"], {}).get("title", stats["mode"])
+        lines.insert(1, ("🏛 " if stats["mode"] in kashan_checker.MODES else "الگوی بررسی: ") + mode_title)
     if annotation:
         lines.append(f"از {annotation.get('requested', len(issues))} مورد گزارش‌شده، {annotation.get('applied', 0)} مورد در {output_label} کامنت شد؛ علت درج‌نشدن بقیه در گزارش آمده است.")
         if not annotation.get("output_created"):

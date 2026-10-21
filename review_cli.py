@@ -14,7 +14,8 @@ def main(argv=None, *, engine=None):
         import checker as engine
     parser = argparse.ArgumentParser(description="بررسی غیرمخرب اسناد پژوهشی")
     parser.add_argument("file", nargs="?")
-    parser.add_argument("--mode", choices=("thesis", "tums", "article", "english"), default="thesis")
+    parser.add_argument("--mode", choices=("thesis", "tums", "article", "english", "kashan", "kashan_master", "kashan_phd"), default="thesis")
+    parser.add_argument("--scope", choices=("full", "fragment"), help="سند کامل یا بخشی از سند؛ پیش‌فرض کاشان بخشی از سند است")
     parser.add_argument("--rules", help="فایل JSON قواعد سفارشی")
     parser.add_argument("--text", action="store_true", help="خواندن ورودی به‌عنوان متن UTF-8")
     parser.add_argument("--format", choices=("text", "json", "html", "csv"), default="text")
@@ -45,6 +46,7 @@ def main(argv=None, *, engine=None):
         if args.annotate_pdf:
             ensure_distinct_output(source, args.annotate_pdf)
         rules = engine.load_rules(args.rules, args.mode)
+        rules["document_scope"] = args.scope or ("fragment" if args.mode.startswith("kashan") else "full")
         if args.include_ambiguous:
             rules["strict"] = False
         before = sha256_file(source)

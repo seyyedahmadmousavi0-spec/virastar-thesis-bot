@@ -88,6 +88,12 @@ _TITLES = {
     "TUMS_CHECKLIST_MISSING": "چک‌لیست دانشگاه", "TUMS_CHAPTER_PROPORTIONS": "نسبت تقریبی فصل‌ها",
     "TUMS_ET_AL_FORBIDDEN": "بازبینی نام نویسندگان منبع", "TUMS_REF_PAGE_FORMAT": "بازبینی صفحهٔ منبع",
     "TUMS_PAGE_MARGIN": "حاشیه‌ها در پروفایل دانشگاه",
+    "KASHAN_SECTION_REVIEW": "بازبینی بخش‌های الگوی کاشان",
+    "KASHAN_ENGLISH_DEGREE": "عنوان انگلیسی مقطع کاشان",
+    "KASHAN_PERSIAN_DEGREE": "عنوان فارسی مقطع کاشان",
+    "KASHAN_REFERENCE_ALPHABETICAL": "ترتیب الفبایی منابع کاشان",
+    "KASHAN_REFERENCE_DUPLICATE": "مدخل تکراری منابع کاشان",
+    "KASHAN_REFERENCE_YEAR": "سال انتشار در مدخل منبع کاشان",
 }
 
 
@@ -96,7 +102,7 @@ def rule_spec(rule_id):
         category = "english_grammar" if rule_id in {"EN_ARTICLE", "EN_PREP", "EN_SVA"} else "english_style"
     elif rule_id.startswith("ACAD_"):
         category = "academic_style"
-    elif rule_id.startswith("TUMS_"):
+    elif rule_id.startswith(("TUMS_", "KASHAN_")):
         category = "university_profile"
     elif "cite" in rule_id or "ref" in rule_id.lower():
         category = "citation_consistency"
@@ -167,6 +173,11 @@ def validate_rules(rules, mode="thesis"):
                     raise RuleConfigurationError("Section patterns must be nonempty strings")
     if not isinstance(rules.get("strict", True), bool):
         raise RuleConfigurationError("strict must be true or false")
+    if rules.get("document_scope", "full") not in {"full", "fragment"}:
+        raise RuleConfigurationError("document_scope must be full or fragment")
+    if "profile_checks" in rules and (not isinstance(rules["profile_checks"], dict)
+            or any(not isinstance(value, bool) for value in rules["profile_checks"].values())):
+        raise RuleConfigurationError("profile_checks must contain boolean switches")
     for key in ("protected_terms", "disabled_rules"):
         values = rules.get(key, [])
         if not isinstance(values, list) or any(not isinstance(item, str) or not item.strip() for item in values):
