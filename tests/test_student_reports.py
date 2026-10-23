@@ -25,6 +25,7 @@ class StudentReportTests(unittest.TestCase):
         self.assertEqual(1, audit["ambiguous_candidates"])
         summary = checker.build_summary(findings, audit, self.rules)
         self.assertIn("C، مبهم: 1", summary)
+        self.assertIn("0 مورد در گزارش است؛ 1 نامزد فقط شمارش شده", summary)
         self.assertIn("فقط برای بررسی دستی", summary)
         self.assertEqual(1, report_data(findings, audit, self.rules)["summary"]["by_confidence"]["C"])
 

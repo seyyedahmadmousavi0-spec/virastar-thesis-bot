@@ -21,15 +21,17 @@ def main(argv=None, *, engine=None):
     parser.add_argument("--format", choices=("text", "json", "html", "csv"), default="text")
     parser.add_argument("--output-dir", help="ذخیرهٔ گزارش‌های HTML، JSON، CSV و متن")
     parser.add_argument("--annotate", help="مسیر کپی مستقل Word با کامنت")
+    parser.add_argument("--word-report", help="مسیر گزارش مستقل Word؛ همهٔ یافته‌ها با عنوان زرد و کامنت جداگانه")
     parser.add_argument("--annotate-pdf", help="آزمایشی: مسیر کپی PDF با یادداشت در محل‌های قابل تطبیق")
-    parser.add_argument("--max-comments", type=int, default=250, help="سقف کامنت‌های نسخهٔ بازبینی (۰ تا ۱۰۰۰)")
+    parser.add_argument("--max-comments", type=int, default=None,
+                        help="سقف اختیاری کامنت‌های نسخهٔ بازبینی (۰ تا ۱۰۰۰۰)؛ پیش‌فرض همهٔ محل‌های قابل تطبیق، ۰ بدون کامنت")
     parser.add_argument("--include-ambiguous", action="store_true")
     parser.add_argument("--fail-on", choices=("A", "B", "C"), help="بازگرداندن کد ۱ در صورت یافتن این سطح")
     parser.add_argument("--list-rules", action="store_true")
     parser.add_argument("--version", action="version", version=PRODUCT_VERSION)
     args = parser.parse_args(argv)
-    if not 0 <= args.max_comments <= 1000:
-        parser.error("--max-comments باید بین ۰ و ۱۰۰۰ باشد")
+    if args.max_comments is not None and not 0 <= args.max_comments <= 10000:
+        parser.error("--max-comments باید بین ۰ و ۱۰۰۰۰ باشد")
     if args.annotate and args.annotate_pdf:
         parser.error("فقط یکی از --annotate و --annotate-pdf را انتخاب کنید")
     if args.list_rules:
@@ -41,10 +43,17 @@ def main(argv=None, *, engine=None):
         parser.error("مسیر فایل ورودی لازم است")
     try:
         source = Path(args.file)
-        if args.annotate:
-            ensure_distinct_output(source, args.annotate)
-        if args.annotate_pdf:
-            ensure_distinct_output(source, args.annotate_pdf)
+        outputs = [Path(path) for path in (args.annotate, args.annotate_pdf, args.word_report) if path]
+        if args.output_dir:
+            outputs.extend(Path(args.output_dir) / f"report.{suffix}" for suffix in ("html", "json", "csv", "txt"))
+        for index, destination in enumerate(outputs):
+            ensure_distinct_output(source, destination)
+            for other in outputs[:index]:
+                # The alias helper expects an existing source when the target
+                # exists. A previous report may already exist while a new
+                # annotation path does not, so prefer the existing path first.
+                pair = (destination, other) if destination.exists() else (other, destination)
+                ensure_distinct_output(*pair)
         rules = engine.load_rules(args.rules, args.mode)
         rules["document_scope"] = args.scope or ("fragment" if args.mode.startswith("kashan") else "full")
         if args.include_ambiguous:
@@ -76,14 +85,24 @@ def main(argv=None, *, engine=None):
             if not stats.get("is_pdf"):
                 raise ValueError("--annotate-pdf requires a PDF input")
             from pdf_annotator import annotate_pdf
-            stats["annotation_summary"] = annotate_pdf(source, issues, args.annotate_pdf, max_comments=args.max_comments)
+            pdf_limit = min(5000, len(issues) if args.max_comments is None else args.max_comments)
+            stats["annotation_summary"] = annotate_pdf(source, issues, args.annotate_pdf, max_comments=pdf_limit)
             stats["annotation_format"] = "pdf"
+        if args.word_report:
+            from word_review_report import write_word_review
+            review = write_word_review(args.word_report, issues, stats, rules, source_path=source)
+            stats["review_document"] = {
+                "created": review["output_created"], "findings": review["requested"],
+                "comments": review["comments"], "highlighted": review["highlighted_entries"], "filetype": "docx",
+            }
         text = engine.build_report(issues, stats, rules)
         if args.output_dir:
             write_artifacts(args.output_dir, issues, stats, rules, source_path=source, text_report=text)
         data = report_data(issues, stats, rules)
         output = {"text": lambda: text, "json": lambda: json_report(data),
                   "html": lambda: html_report(data), "csv": lambda: csv_report(data)}[args.format]()
+        if sha256_file(source) != before:
+            raise DocumentIntegrityError("Input changed during report generation")
         print(output)
         if stats.get("analysis_status") == "failed" or any(i.rule_id == "pdf_read_error" for i in issues):
             return 2

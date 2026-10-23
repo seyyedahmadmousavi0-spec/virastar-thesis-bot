@@ -12,7 +12,7 @@ import re
 from doc_guard import atomic_write
 
 SCHEMA_VERSION = "2.0"
-PRODUCT_VERSION = "2.2.0"
+PRODUCT_VERSION = "2.3.0"
 CONFIDENCE_LABELS = {"A": "اطمینان بالا", "B": "نیازمند بازبینی", "C": "مبهم"}
 CATEGORY_LABELS = {
     "general": "بازبینی عمومی", "english_grammar": "دستور زبان انگلیسی",
@@ -81,8 +81,11 @@ def safe_annotation_summary(summary):
     """Export audit fields only, excluding caller paths and arbitrary metadata."""
     if not isinstance(summary, dict):
         return None
-    safe = {key: max(0, value) for key in ("requested", "applied", "unapplied", "max_comments")
+    safe = {key: max(0, value) for key in ("requested", "applied", "unapplied", "max_comments",
+                                         "exact_applied", "paragraph_applied", "highlighted")
             if isinstance((value := summary.get(key)), int) and not isinstance(value, bool)}
+    if "max_comments" in summary and summary["max_comments"] is None:
+        safe["max_comments"] = None
     safe["output_created"] = bool(summary.get("output_created", False))
     if isinstance(summary.get("experimental"), bool):
         safe["experimental"] = summary["experimental"]
@@ -96,10 +99,67 @@ def safe_annotation_summary(summary):
     for record in records if isinstance(records, list) else []:
         if not isinstance(record, dict):
             continue
-        safe["records"].append({key: value for key, value in record.items()
-                                if (key in numeric and isinstance(value, int) and not isinstance(value, bool))
-                                or (key in textual and isinstance(value, str))})
+        row = {key: value for key, value in record.items()
+               if (key in numeric and isinstance(value, int) and not isinstance(value, bool))
+               or (key in textual and isinstance(value, str))}
+        if isinstance(record.get("anchor_scope"), str) and record["anchor_scope"] in {"exact", "paragraph"}:
+            row["anchor_scope"] = record["anchor_scope"]
+        safe["records"].append(row)
     return safe
+
+
+def safe_review_document_summary(summary):
+    """Export companion Word counts, never its temporary path or source content."""
+    if not isinstance(summary, dict):
+        return None
+    safe = {"created": bool(summary.get("created", False))}
+    safe.update({key: max(0, value) for key in ("findings", "comments", "highlighted")
+                 if isinstance((value := summary.get(key)), int) and not isinstance(value, bool)})
+    if summary.get("filetype") == "docx":
+        safe["filetype"] = "docx"
+    return safe
+
+
+def annotation_summary_lines(stats):
+    """Explain source annotations separately from the independent full review Word."""
+    lines = []
+    summary = safe_annotation_summary(stats.get("annotation_summary"))
+    if summary is not None:
+        label = annotation_format_label(stats)
+        lines.append("از " + str(summary.get("requested", 0)) + " مورد، "
+                     + str(summary.get("applied", 0)) + " مورد در " + label + " کامنت شد.")
+        if label == "Word" and any(key in summary for key in ("exact_applied", "paragraph_applied")):
+            lines.append("در نسخهٔ بازبینیِ سند اصلی: " + str(summary.get("exact_applied", 0))
+                         + " کامنت در محدودهٔ دقیق و " + str(summary.get("paragraph_applied", 0))
+                         + " کامنت در سطح پاراگراف ثبت شد.")
+            if summary.get("paragraph_applied", 0):
+                lines.append("کامنت سطح پاراگراف به کل پاراگراف مربوط است؛ محل دقیق یک عبارت را نشان نمی‌دهد.")
+        if "highlighted" in summary:
+            lines.append("تعداد مواردِ دارای کامنت و هایلایت زرد: " + str(summary["highlighted"]) + ".")
+        if "max_comments" in summary:
+            lines.append("سقف تعداد کامنت: " + ("بدون سقف تعداد" if summary["max_comments"] is None
+                                               else str(summary["max_comments"])) + ".")
+        if not summary.get("output_created"):
+            lines.append("تولید نسخهٔ بازبینی تکمیل نشد؛ جزئیات در گزارش باقی است.")
+        if summary.get("experimental"):
+            lines.append("نشانه‌گذاری PDF آزمایشی است؛ نمایش هایلایت و یادداشت فارسی در PDFخوان شما باید بررسی شود.")
+        for reason, count in summary.get("reasons", {}).items():
+            lines.append(ANNOTATION_REASONS[reason] + ": " + str(count))
+    review = safe_review_document_summary(stats.get("review_document"))
+    if review is not None:
+        if review["created"]:
+            lines.append("Word گزارش کامل: " + str(review.get("findings", 0)) + " مورد، "
+                         + str(review.get("comments", 0)) + " کامنت و "
+                         + str(review.get("highlighted", 0)) + " مورد هایلایت زرد.")
+            if any(review.get(key, 0) < review.get("findings", 0) for key in ("comments", "highlighted")):
+                lines.append("کامنت و هایلایت همهٔ موارد در Word گزارش کامل تکمیل نشده است؛ تعدادهای بالا را بررسی کنید.")
+            lines.append("Word گزارش کامل، سند مستقلی از یافته‌هاست؛ محل کامنت‌های آن، محل دقیق ایراد در سند اصلی نیست.")
+        else:
+            lines.append("تولید Word گزارش کامل انجام نشد؛ همهٔ یافته‌های گزارش‌شده در گزارش متنی باقی‌اند.")
+    if summary is not None or review is not None:
+        lines.append("موارد سطح C فقط برای بررسی دستی‌اند؛ کامنت یا هایلایت، اطمینان آن‌ها را افزایش نمی‌دهد.")
+        lines.append("برای محتوای حفاظت‌شده یا محل نامطمئن، محل دقیقِ تأییدنشده در سند اصلی ساخته نمی‌شود.")
+    return lines
 
 
 def safe_coverage(coverage):
@@ -269,7 +329,7 @@ def report_data(issues, stats, rules):
         record = records.get(index)
         if record is not None and all(record.get(key, row.get(key)) == row.get(key)
                                       for key in ("rule_id", "block_id", "char_start", "char_end")):
-            row["annotation"] = {key: record[key] for key in ("status", "reason") if key in record}
+            row["annotation"] = {key: record[key] for key in ("status", "reason", "anchor_scope") if key in record}
         rows.append(row)
     # Only known analysis statistics are exported; arbitrary caller metadata stays private.
     keys = {"mode", "words", "body_words", "paragraphs", "tables", "images", "chapters", "total_pages",
@@ -283,6 +343,9 @@ def report_data(issues, stats, rules):
         safe_stats["coverage"] = safe_coverage(safe_stats["coverage"])
     if annotation is not None:
         safe_stats["annotation_summary"] = annotation
+    review_document = safe_review_document_summary(stats.get("review_document"))
+    if review_document is not None:
+        safe_stats["review_document"] = review_document
     profile = safe_university_profile(stats.get("university_profile"))
     if profile is not None:
         safe_stats["university_profile"] = profile
@@ -345,7 +408,9 @@ def html_report(data):
         evidence = original if original is not None else row.get("snippet", "")
         suggestion = row.get("suggestion")
         annotation = row.get("annotation", {})
-        annotation_text = (f"در {output_label} کامنت شد" if annotation.get("status") == "applied" else
+        annotation_text = ((f"در {output_label} در سطح پاراگراف کامنت شد؛ محل دقیق عبارت نیست"
+                            if annotation.get("anchor_scope") == "paragraph" else f"در {output_label} کامنت شد")
+                           if annotation.get("status") == "applied" else
                            ANNOTATION_REASONS.get(annotation.get("reason"), f"در {output_label} کامنت نشد")) if annotation else ""
         cards.append(
             '<article class="finding" data-confidence="' + escape(confidence, quote=True) + '">'
@@ -374,15 +439,11 @@ def html_report(data):
     hash_row = '<p class="hash">SHA-256 ورودی: <code>' + escape(source_hash) + '</code></p>' if source_hash else ''
     summary = data["stats"].get("annotation_summary")
     annotation_section = ''
-    if summary:
-        reasons = ''.join('<li>' + escape(ANNOTATION_REASONS.get(reason, reason)) + ': ' + str(count) + '</li>'
-                          for reason, count in summary.get("reasons", {}).items())
-        annotation_section = ('<section class="notes"><h2>کامنت‌های نسخهٔ بازبینی</h2><p>از '
-                              + str(summary.get("requested", len(cards))) + ' مورد، '
-                              + str(summary.get("applied", 0)) + ' مورد در ' + output_label + ' کامنت شد.</p>'
-                              + ('<p>تولید نسخهٔ بازبینی تکمیل نشد؛ جزئیات در گزارش باقی است.</p>'
-                                 if not summary.get("output_created") else '')
-                              + ('<ul>' + reasons + '</ul>' if reasons else '') + '</section>')
+    if summary is not None or data["stats"].get("review_document") is not None:
+        summary = summary or {}
+        annotation_section = ('<section class="notes"><h2>کامنت‌ها و هایلایت‌های گزارش و نسخهٔ بازبینی</h2>'
+                              + ''.join('<p>' + escape(line) + '</p>' for line in annotation_summary_lines(data["stats"]))
+                              + '</section>')
     coverage = data["stats"].get("coverage", {})
     coverage_rows = ''.join('<tr><th>' + escape(STORY_LABELS.get(story, story)) + '</th><td>'
                             + escape(COVERAGE_LABELS.get(info.get("status"), "نامشخص")) + '</td><td>'

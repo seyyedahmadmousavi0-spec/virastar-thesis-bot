@@ -88,17 +88,23 @@ class DeliveryTests(unittest.TestCase):
         with patch.object(bot, "download", side_effect=lambda fid, dest: Path(dest).write_bytes(before)):
             bot.process_document(-100, {"file_name": "پایان‌نامه.docx", "file_id": "synthetic"}, sender_id=7)
         self.assertEqual(before, source.read_bytes())
-        self.assertEqual([".docx"], [row[1] for row in self.sent])
+        self.assertEqual([".docx", ".docx"], [row[1] for row in self.sent])
         result = Document(io.BytesIO(self.sent[0][2]))
         self.assertEqual(doc.paragraphs[0].text, result.paragraphs[0].text)
         self.assertGreater(len(result.comments), 0)
+        full_review = Document(io.BytesIO(self.sent[1][2]))
+        from docx.enum.text import WD_COLOR_INDEX
+        yellow = [run for paragraph in full_review.paragraphs for run in paragraph.runs
+                  if run.font.highlight_color == WD_COLOR_INDEX.YELLOW]
+        self.assertEqual(len(full_review.comments), len(yellow))
+        self.assertGreater(len(full_review.comments), len(result.comments))
         self.assertIn("کامنت", self.messages[-1])
         self.assertLess(len(self.messages[-1]), 800)
         self.assertIn("/report", self.messages[-1])
         bot.deliver_reports(-100, sender_id=8)
-        self.assertEqual(1, len(self.sent))
+        self.assertEqual(2, len(self.sent))
         bot.deliver_reports(-100, sender_id=7)
-        self.assertEqual([".docx", ".html", ".txt"], [row[1] for row in self.sent])
+        self.assertEqual([".docx", ".docx", ".html", ".txt"], [row[1] for row in self.sent])
         self.assertIn("common_mistake", self.sent[-1][2].decode("utf-8"))
 
     def test_cache_rejection_sends_complete_reports_immediately(self):

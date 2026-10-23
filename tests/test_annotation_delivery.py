@@ -58,14 +58,15 @@ class AnnotationDeliveryTests(unittest.TestCase):
         self.assertEqual(summary["records"][0]["reason"], "comment_limit")
         self.assertEqual(summary["records"][1]["status"], "applied")
 
-    def test_priority_is_respected_for_overlapping_witnesses(self):
+    def test_overlapping_witnesses_each_receive_a_comment(self):
         document = Document()
         document.add_paragraph("پژوهش حاضر نیازمند بررسی است.")
         issues = [finding("پژوهش حاضر", confidence="B"), finding("پژوهش")]
         self.assertTrue(annotate_document(document, issues, self.output))
         summary = self.assert_accounted(document)
-        self.assertEqual(summary["records"][0]["reason"], "overlapping_target")
-        self.assertEqual(summary["applied"], 1)
+        self.assertEqual(["applied", "applied"], [record["status"] for record in summary["records"]])
+        self.assertEqual(summary["applied"], 2)
+        self.assertEqual(2, len(Document(self.output).comments))
 
     def test_paragraph_cap_and_disabled_cap_account_for_every_finding(self):
         document = Document()

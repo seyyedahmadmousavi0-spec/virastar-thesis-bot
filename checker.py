@@ -32,7 +32,7 @@ import safe_annotator
 from rule_registry import FindingBuffer, bounded_findings
 from report_artifacts import (ANNOTATION_REASONS, COVERAGE_LABELS, STORY_LABELS,
                               ambiguous_count, annotation_format_label, category_label, location_label, safe_annotation_summary,
-                              university_profile_lines)
+                              university_profile_lines, annotation_summary_lines, safe_review_document_summary)
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 ZWNJ = "\u200c"
@@ -1469,15 +1469,9 @@ def build_report(issues, stats, rules, examples=None):
     output_label = annotation_format_label(stats)
     records = {record.get("index"): record for record in (annotation or {}).get("records", [])}
     indices = {id(issue): index for index, issue in enumerate(issues)}
-    if annotation:
-        lines += ["", "کامنت‌های نسخهٔ بازبینی",
-                  f"از {annotation.get('requested', len(issues))} مورد گزارش‌شده، {annotation.get('applied', 0)} مورد در {output_label} کامنت شد."]
-        if not annotation.get("output_created"):
-            lines.append("تولید امن نسخهٔ بازبینی تکمیل نشد؛ جزئیات یافته‌ها در همین گزارش آمده است.")
-        if annotation.get("experimental"):
-            lines.append("نشانه‌گذاری PDF آزمایشی است؛ نمایش یادداشت فارسی در PDFخوان شما باید بررسی شود.")
-        for reason, count in annotation.get("reasons", {}).items():
-            lines.append(f"• {ANNOTATION_REASONS.get(reason, reason)}: {count} مورد")
+    if annotation or stats.get("review_document"):
+        lines += ["", "کامنت‌ها و هایلایت‌های Word و نسخهٔ بازبینی"]
+        lines.extend(annotation_summary_lines(stats))
     if stats.get("coverage"):
         lines += ["", "پوشش بخش‌های سند (استخراج متن با امکان درج کامنت یکسان نیست)"]
         for story, info in stats["coverage"].items():
@@ -1525,6 +1519,8 @@ def build_report(issues, stats, rules, examples=None):
                 record = records.get(indices[id(it)])
                 if record is not None and record.get("rule_id", it.rule_id) == it.rule_id:
                     state = f"در {output_label} کامنت شد" if record.get("status") == "applied" else ANNOTATION_REASONS.get(record.get("reason"), f"در {output_label} کامنت نشد")
+                    if record.get("status") == "applied" and record.get("anchor_scope") == "paragraph":
+                        state += "؛ در سطح کل پاراگراف"
                     row += f"\n    وضعیت {output_label}: {state}"
                 lines.append(row + "\n")
                 issue_counter += 1
@@ -1559,10 +1555,22 @@ def build_summary(issues, stats, rules):
     if stats.get("mode"):
         mode_title = rules.get("modes", {}).get(stats["mode"], {}).get("title", stats["mode"])
         lines.insert(1, ("🏛 " if stats["mode"] in kashan_checker.MODES else "الگوی بررسی: ") + mode_title)
+    if stats.get("ambiguous_candidates", 0):
+        lines.append(f"از موارد مبهم، {conf['C']} مورد در گزارش است؛ {stats['ambiguous_candidates']} نامزد فقط شمارش شده و وارد فهرست یافته‌ها نشده است.")
     if annotation:
-        lines.append(f"از {annotation.get('requested', len(issues))} مورد گزارش‌شده، {annotation.get('applied', 0)} مورد در {output_label} کامنت شد؛ علت درج‌نشدن بقیه در گزارش آمده است.")
+        lines.append(f"از {annotation.get('requested', len(issues))} مورد گزارش‌شده، {annotation.get('applied', 0)} مورد در {output_label} کامنت شد.")
+        if output_label == "Word" and "paragraph_applied" in annotation:
+            lines.append(f"محل دقیق: {annotation.get('exact_applied', 0)} · در سطح پاراگراف: {annotation['paragraph_applied']}؛ موارد ثبت‌شده زرد شده‌اند.")
+        if annotation.get("unapplied", 0):
+            lines.append("علت درج‌نشدن بقیه در سند اصلی، در گزارش آمده است.")
         if not annotation.get("output_created"):
             lines.append(f"تولید امن {output_label} تکمیل نشد؛ گزارش جایگزین را ببینید.")
+    review = safe_review_document_summary(stats.get("review_document"))
+    if review:
+        if review["created"]:
+            lines.append(f"Word «همهٔ ایرادها»: {review.get('findings', 0)} مورد با {review.get('comments', 0)} کامنت و {review.get('highlighted', 0)} عنوان زرد؛ گزارش مستقل از متن اصلی است.")
+        else:
+            lines.append("Word «همهٔ ایرادها» آماده نشد؛ همهٔ یافته‌ها در HTML و TXT ارسالی هستند.")
     if stats.get("analysis_status") == "partial":
         lines.append("⚠️ بخشی از سند بررسی نشد یا پوشش کامل نداشت؛ جزئیات در گزارش است.")
     if not issues and stats.get("analysis_status") != "failed":
@@ -1591,7 +1599,7 @@ def split_message(text, limit=3800):
     return parts
 
 
-def annotate(doc, issues, out_path, max_comments=250, per_par=4):
+def annotate(doc, issues, out_path, max_comments=None, per_par=None):
     """
     ذخیره‌ی نسخه‌ی کامنت‌گذاری‌شده‌ی فایل کاربر در Word با موتور ایمن safe_annotator.
     قاعده اساسی: به هیچ عنوان به متن اصلی دست زده نمی‌شود (حفظ ۱۰۰٪ نویسه‌ها و استایل‌ها).

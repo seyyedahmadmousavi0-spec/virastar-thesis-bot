@@ -15,7 +15,7 @@ from report_artifacts import PRODUCT_VERSION
 ROOT_FILES = (
     "checker.py", "academic_checker.py", "analysis_model.py", "bot.py", "bot_runtime.py",
     "doc_guard.py", "document_blocks.py", "en_checker.py", "pdf_handler.py", "protected_content.py",
-    "report_artifacts.py", "report_store.py", "pdf_annotator.py", "review_cli.py", "rule_registry.py", "run_benchmark.py", "safe_annotator.py",
+    "report_artifacts.py", "report_store.py", "pdf_annotator.py", "review_cli.py", "word_review_report.py", "rule_registry.py", "run_benchmark.py", "safe_annotator.py",
     "tums_checker.py", "kashan_checker.py", "web_runner.py", "package_release.py", "rules.json", "requirements.txt",
     "README.md", ".env.example", ".dockerignore", "Dockerfile", "virastar-bot.service",
     "run.bat", "run.sh", "run_hidden.vbs", "install_startup.bat", "uninstall_startup.bat",

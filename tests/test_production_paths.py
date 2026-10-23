@@ -56,7 +56,7 @@ class ProductionPathTests(unittest.TestCase):
         def send_file(_chat, path, *args):
             if fail_delivery:
                 raise bot.BaleAPIError("sendDocument: HTTP 503")
-            delivered[Path(path).suffix] = Path(path).read_bytes()
+            delivered[Path(path).name] = Path(path).read_bytes()
             return {"message_id": 1}
 
         with patch.object(bot, "download", side_effect=download), \
@@ -69,13 +69,18 @@ class ProductionPathTests(unittest.TestCase):
 
     def test_complete_word_job_defaults_to_word_and_keeps_optional_reports(self):
         delivered, _ = self.run_document(name="پژوهش" * 60 + ".docx")
-        self.assertEqual({".docx"}, set(delivered))
+        self.assertEqual({".docx"}, {Path(name).suffix for name in delivered})
+        self.assertEqual(2, len(delivered))
         reports = bot.reports.get(123, 123)
         self.assertEqual({"html", "txt"}, set(reports))
         self.assertIn("common_mistake", reports["html"].decode("utf-8"))
-        result = Document(io.BytesIO(delivered[".docx"]))
+        result = Document(io.BytesIO(next(content for name, content in delivered.items()
+                                         if name.startswith("نسخه-بازبینی-"))))
         self.assertEqual("بخاطر نمونه ها بررسی شد.", result.paragraphs[0].text)
         self.assertGreater(len(result.comments), 0)
+        complete = Document(io.BytesIO(next(content for name, content in delivered.items()
+                                           if name.startswith("همه-ایرادها-"))))
+        self.assertGreater(len(complete.comments), len(result.comments))
 
     def test_delivery_failure_does_not_blame_a_valid_document(self):
         _, send = self.run_document(fail_delivery=True)

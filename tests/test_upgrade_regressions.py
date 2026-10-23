@@ -284,7 +284,7 @@ class UpgradeRegressions(unittest.TestCase):
             with self.subTest(requested=requested), patch.object(bot,"download",side_effect=download), patch.object(bot,"send"), patch.object(bot,"send_file"), patch.object(checker,"annotate",return_value=False) as annotate:
                 bot.process_document(98765,{"file_name":"synthetic.docx","file_id":"synthetic"},annotate_requested=requested)
                 self.assertEqual(1,annotate.call_count)
-                self.assertEqual(250, annotate.call_args.kwargs["max_comments"])
+                self.assertIsNone(annotate.call_args.kwargs["max_comments"])
                 self.assertIsNone(annotate.call_args.kwargs["per_par"])
 
     def test_per_rule_benchmark_rejects_unrelated_alert(self):
