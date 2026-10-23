@@ -1,10 +1,11 @@
-"""Report audits distinguish verified source anchors from an independent review Word."""
+"""Report audits distinguish original text anchors from appended review entries."""
 import json
 import unittest
 
 from analysis_model import Issue
 from report_artifacts import (annotation_summary_lines, html_report, report_data,
-                              safe_annotation_summary, safe_review_document_summary)
+                              safe_annotation_summary, safe_review_document_summary,
+                              safe_unified_word_review)
 
 
 class AnnotationCompletenessReportTests(unittest.TestCase):
@@ -92,6 +93,68 @@ class AnnotationCompletenessReportTests(unittest.TestCase):
         html = html_report(report_data([], stats, {}))
         self.assertEqual(1, html.count("تداخل با محتوای حفاظت‌شده: 1"))
         self.assertEqual(1, html.count("محل دقیق قابل تأیید نیست: 2"))
+
+    def unified_stats(self):
+        stats = self.stats()
+        stats.pop("review_document")
+        stats["unified_word_review"] = {
+            "output_created": True, "requested": 3, "source_comments": 2,
+            "appendix_comments": 1, "comments": 3, "highlighted": 3,
+            "exact_comments": 1, "paragraph_comments": 1,
+            "path": "C:/private/review.docx", "source_content": "private manuscript"}
+        return stats
+
+    def test_unified_word_counts_round_trip_without_changing_original_anchor_audit(self):
+        data = report_data(self.findings(), self.unified_stats(), {"strict": False})
+        exported = json.loads(json.dumps(data, ensure_ascii=False))
+        unified = exported["stats"]["unified_word_review"]
+        self.assertEqual(3, unified["comments"])
+        self.assertEqual(2, unified["source_comments"])
+        self.assertEqual(1, unified["appendix_comments"])
+        self.assertEqual(2, exported["stats"]["annotation_summary"]["applied"])
+        self.assertEqual("unapplied", exported["findings"][2]["annotation"]["status"])
+        self.assertNotIn("anchor_scope", exported["findings"][2]["annotation"])
+        self.assertNotIn("C:/private", json.dumps(exported))
+        self.assertNotIn("private manuscript", json.dumps(exported))
+
+    def test_same_word_explains_appended_items_without_claiming_exact_source_anchors(self):
+        data = report_data(self.findings(), self.unified_stats(), {"strict": False})
+        lines = "\n".join(annotation_summary_lines(data["stats"]))
+        self.assertIn("همان Word بازبینی: از 3 مورد، 3 مورد کامنت و 3 مورد هایلایت زرد دارد", lines)
+        self.assertIn("2 مورد در متن سند و 1 مورد در بخش «یافته‌های تکمیلی بازبینی»", lines)
+        self.assertIn("ممیزی محل‌های متن اصلی: از 3 مورد، 2 مورد در متن اصلی کامنت شد", lines)
+        self.assertIn("متن آن از نویسنده نیست", lines)
+        self.assertNotIn("از 3 مورد، 2 مورد در Word کامنت شد", lines)
+        html = html_report(data)
+        self.assertIn("در بخش یافته‌های تکمیلی بازبینی همین Word کامنت و زرد شد؛ محل دقیق در متن اصلی نیست", html)
+        self.assertIn("در Word در سطح پاراگراف کامنت شد؛ محل دقیق عبارت نیست", html)
+        self.assertNotIn("سند مستقلی از یافته‌هاست", html)
+        self.assertIn("درج امن کامنت در این بخش پشتیبانی نمی‌شود", html)
+
+    def test_incomplete_unified_counts_do_not_invent_per_finding_completion(self):
+        stats = self.unified_stats()
+        stats["unified_word_review"]["comments"] = 2
+        html = html_report(report_data(self.findings(), stats, {"strict": False}))
+        self.assertIn("ثبت کامنت و هایلایت همهٔ موارد در همین Word تکمیل نشده", html)
+        self.assertNotIn("در بخش یافته‌های تکمیلی بازبینی همین Word کامنت و زرد شد", html)
+        stats["unified_word_review"]["output_created"] = False
+        html = html_report(report_data(self.findings(), stats, {"strict": False}))
+        self.assertIn("تولید Word یکپارچه تکمیل نشد", html)
+        self.assertNotIn("همان Word بازبینی: از 3 مورد", html)
+
+    def test_unified_summary_rejects_metadata_types_and_html_escapes_source_content(self):
+        safe = safe_unified_word_review({
+            "output_created": "yes", "requested": -2, "source_comments": True,
+            "appendix_comments": "1", "comments": 5, "highlighted": 5,
+            "exact_comments": 2, "paragraph_comments": 2,
+            "path": "secret", "html": "<script>alert(1)</script>"})
+        self.assertEqual({"output_created": False, "requested": 0, "comments": 5,
+                          "highlighted": 5, "exact_comments": 2, "paragraph_comments": 2}, safe)
+        issues = self.findings()
+        issues[2].message = '<script>alert("source")</script>'
+        html = html_report(report_data(issues, self.unified_stats(), {"strict": False}))
+        self.assertIn('&lt;script&gt;alert(&quot;source&quot;)&lt;/script&gt;', html)
+        self.assertNotIn('<script>alert("source")</script>', html)
 
 
 if __name__ == "__main__":

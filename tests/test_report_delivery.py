@@ -88,23 +88,26 @@ class DeliveryTests(unittest.TestCase):
         with patch.object(bot, "download", side_effect=lambda fid, dest: Path(dest).write_bytes(before)):
             bot.process_document(-100, {"file_name": "پایان‌نامه.docx", "file_id": "synthetic"}, sender_id=7)
         self.assertEqual(before, source.read_bytes())
-        self.assertEqual([".docx", ".docx"], [row[1] for row in self.sent])
+        self.assertEqual([".docx"], [row[1] for row in self.sent])
         result = Document(io.BytesIO(self.sent[0][2]))
         self.assertEqual(doc.paragraphs[0].text, result.paragraphs[0].text)
         self.assertGreater(len(result.comments), 0)
-        full_review = Document(io.BytesIO(self.sent[1][2]))
+        full_review = result
         from docx.enum.text import WD_COLOR_INDEX
         yellow = [run for paragraph in full_review.paragraphs for run in paragraph.runs
                   if run.font.highlight_color == WD_COLOR_INDEX.YELLOW]
-        self.assertEqual(len(full_review.comments), len(yellow))
-        self.assertGreater(len(full_review.comments), len(result.comments))
+        self.assertGreater(len(yellow), 0)
+        from checker import analyze
+        _, findings, _ = analyze(source)
+        self.assertEqual(len(findings), len(full_review.comments))
+        self.assertIn("یافته‌های تکمیلی بازبینی", "\n".join(p.text for p in result.paragraphs))
         self.assertIn("کامنت", self.messages[-1])
         self.assertLess(len(self.messages[-1]), 800)
         self.assertIn("/report", self.messages[-1])
         bot.deliver_reports(-100, sender_id=8)
-        self.assertEqual(2, len(self.sent))
+        self.assertEqual(1, len(self.sent))
         bot.deliver_reports(-100, sender_id=7)
-        self.assertEqual([".docx", ".docx", ".html", ".txt"], [row[1] for row in self.sent])
+        self.assertEqual([".docx", ".html", ".txt"], [row[1] for row in self.sent])
         self.assertIn("common_mistake", self.sent[-1][2].decode("utf-8"))
 
     def test_cache_rejection_sends_complete_reports_immediately(self):
@@ -179,12 +182,14 @@ class CliDeliveryTests(unittest.TestCase):
                                           "--max-comments", "1", "--output-dir", str(output)])
             self.assertEqual(0, result)
             self.assertEqual(before, source.read_bytes())
-            self.assertEqual(1, len(Document(reviewed).comments))
+            self.assertGreater(len(Document(reviewed).comments), 1)
             import json
             report = json.loads((output / "report.json").read_text(encoding="utf-8"))
             self.assertEqual(1, report["stats"]["annotation_summary"]["applied"])
             self.assertEqual(1, report["stats"]["annotation_summary"]["max_comments"])
             self.assertGreater(report["stats"]["annotation_summary"]["unapplied"], 0)
+            self.assertEqual(len(report["findings"]), len(Document(reviewed).comments))
+            self.assertTrue(report["stats"]["unified_word_review"]["output_created"])
 
 
 if __name__ == "__main__":

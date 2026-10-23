@@ -12,7 +12,7 @@ import re
 from doc_guard import atomic_write
 
 SCHEMA_VERSION = "2.0"
-PRODUCT_VERSION = "2.3.0"
+PRODUCT_VERSION = "2.3.1"
 CONFIDENCE_LABELS = {"A": "اطمینان بالا", "B": "نیازمند بازبینی", "C": "مبهم"}
 CATEGORY_LABELS = {
     "general": "بازبینی عمومی", "english_grammar": "دستور زبان انگلیسی",
@@ -120,21 +120,61 @@ def safe_review_document_summary(summary):
     return safe
 
 
+def safe_unified_word_review(summary):
+    """Export counts for the single reviewed source Word, without private paths."""
+    if not isinstance(summary, dict):
+        return None
+    safe = {"output_created": summary.get("output_created") is True}
+    safe.update({key: max(0, value) for key in (
+        "requested", "source_comments", "appendix_comments", "comments", "highlighted",
+        "exact_comments", "paragraph_comments")
+        if isinstance((value := summary.get(key)), int) and not isinstance(value, bool)})
+    return safe
+
+
+def _unified_word_review_complete(summary):
+    return (summary is not None and summary.get("output_created")
+            and all(key in summary for key in ("requested", "comments", "highlighted",
+                                               "source_comments", "appendix_comments"))
+            and summary["comments"] == summary["requested"] == summary["highlighted"]
+            and summary["source_comments"] + summary["appendix_comments"] == summary["requested"])
+
+
 def annotation_summary_lines(stats):
-    """Explain source annotations separately from the independent full review Word."""
+    """Separate the original text anchors from the appended review section."""
     lines = []
     summary = safe_annotation_summary(stats.get("annotation_summary"))
+    unified = safe_unified_word_review(stats.get("unified_word_review"))
+    if unified is not None:
+        if unified["output_created"]:
+            lines.append("همان Word بازبینی: از " + str(unified.get("requested", 0)) + " مورد، "
+                         + str(unified.get("comments", 0)) + " مورد کامنت و "
+                         + str(unified.get("highlighted", 0)) + " مورد هایلایت زرد دارد.")
+            lines.append("محل ثبت در همین فایل: " + str(unified.get("source_comments", 0))
+                         + " مورد در متن سند و " + str(unified.get("appendix_comments", 0))
+                         + " مورد در بخش «یافته‌های تکمیلی بازبینی» در پایان همان Word.")
+            if not _unified_word_review_complete(unified):
+                lines.append("ثبت کامنت و هایلایت همهٔ موارد در همین Word تکمیل نشده است؛ تعدادهای بالا را بررسی کنید.")
+            if unified.get("appendix_comments", 0):
+                lines.append("بخش «یافته‌های تکمیلی بازبینی» به نسخهٔ بازبینی افزوده شده است؛ متن آن از نویسنده نیست. "
+                             "عنوان زرد و کامنت هر مورد در این بخش، محل دقیق ایراد در متن اصلی را نشان نمی‌دهد.")
+        else:
+            lines.append("تولید Word یکپارچه تکمیل نشد؛ ثبت همهٔ موارد در همین فایل تأیید نمی‌شود و جزئیات در گزارش باقی است.")
     if summary is not None:
         label = annotation_format_label(stats)
-        lines.append("از " + str(summary.get("requested", 0)) + " مورد، "
-                     + str(summary.get("applied", 0)) + " مورد در " + label + " کامنت شد.")
+        if unified is not None and label == "Word":
+            lines.append("ممیزی محل‌های متن اصلی: از " + str(summary.get("requested", 0)) + " مورد، "
+                         + str(summary.get("applied", 0)) + " مورد در متن اصلی کامنت شد.")
+        else:
+            lines.append("از " + str(summary.get("requested", 0)) + " مورد، "
+                         + str(summary.get("applied", 0)) + " مورد در " + label + " کامنت شد.")
         if label == "Word" and any(key in summary for key in ("exact_applied", "paragraph_applied")):
             lines.append("در نسخهٔ بازبینیِ سند اصلی: " + str(summary.get("exact_applied", 0))
                          + " کامنت در محدودهٔ دقیق و " + str(summary.get("paragraph_applied", 0))
                          + " کامنت در سطح پاراگراف ثبت شد.")
             if summary.get("paragraph_applied", 0):
                 lines.append("کامنت سطح پاراگراف به کل پاراگراف مربوط است؛ محل دقیق یک عبارت را نشان نمی‌دهد.")
-        if "highlighted" in summary:
+        if "highlighted" in summary and unified is None:
             lines.append("تعداد مواردِ دارای کامنت و هایلایت زرد: " + str(summary["highlighted"]) + ".")
         if "max_comments" in summary:
             lines.append("سقف تعداد کامنت: " + ("بدون سقف تعداد" if summary["max_comments"] is None
@@ -143,6 +183,8 @@ def annotation_summary_lines(stats):
             lines.append("تولید نسخهٔ بازبینی تکمیل نشد؛ جزئیات در گزارش باقی است.")
         if summary.get("experimental"):
             lines.append("نشانه‌گذاری PDF آزمایشی است؛ نمایش هایلایت و یادداشت فارسی در PDFخوان شما باید بررسی شود.")
+        if unified is not None and summary.get("reasons"):
+            lines.append("علت درج‌نشدن در متن اصلی (ثبت در بخش یافته‌های تکمیلی بازبینی جداگانه شمرده شده است):")
         for reason, count in summary.get("reasons", {}).items():
             lines.append(ANNOTATION_REASONS[reason] + ": " + str(count))
     review = safe_review_document_summary(stats.get("review_document"))
@@ -156,7 +198,7 @@ def annotation_summary_lines(stats):
             lines.append("Word گزارش کامل، سند مستقلی از یافته‌هاست؛ محل کامنت‌های آن، محل دقیق ایراد در سند اصلی نیست.")
         else:
             lines.append("تولید Word گزارش کامل انجام نشد؛ همهٔ یافته‌های گزارش‌شده در گزارش متنی باقی‌اند.")
-    if summary is not None or review is not None:
+    if summary is not None or review is not None or unified is not None:
         lines.append("موارد سطح C فقط برای بررسی دستی‌اند؛ کامنت یا هایلایت، اطمینان آن‌ها را افزایش نمی‌دهد.")
         lines.append("برای محتوای حفاظت‌شده یا محل نامطمئن، محل دقیقِ تأییدنشده در سند اصلی ساخته نمی‌شود.")
     return lines
@@ -346,6 +388,9 @@ def report_data(issues, stats, rules):
     review_document = safe_review_document_summary(stats.get("review_document"))
     if review_document is not None:
         safe_stats["review_document"] = review_document
+    unified_word_review = safe_unified_word_review(stats.get("unified_word_review"))
+    if unified_word_review is not None:
+        safe_stats["unified_word_review"] = unified_word_review
     profile = safe_university_profile(stats.get("university_profile"))
     if profile is not None:
         safe_stats["university_profile"] = profile
@@ -402,6 +447,8 @@ def html_report(data):
     """A self-contained RTL report with no fonts, scripts, analytics or network dependencies."""
     cards = []
     output_label = annotation_format_label(data["stats"])
+    unified = safe_unified_word_review(data["stats"].get("unified_word_review"))
+    unified_complete = _unified_word_review_complete(unified)
     for row in data["findings"]:
         confidence = row["confidence"]
         original = row.get("original_text")
@@ -412,6 +459,8 @@ def html_report(data):
                             if annotation.get("anchor_scope") == "paragraph" else f"در {output_label} کامنت شد")
                            if annotation.get("status") == "applied" else
                            ANNOTATION_REASONS.get(annotation.get("reason"), f"در {output_label} کامنت نشد")) if annotation else ""
+        if unified_complete and annotation.get("status") == "unapplied":
+            annotation_text += "؛ در بخش یافته‌های تکمیلی بازبینی همین Word کامنت و زرد شد؛ محل دقیق در متن اصلی نیست"
         cards.append(
             '<article class="finding" data-confidence="' + escape(confidence, quote=True) + '">'
             '<div class="finding-top"><span class="badge ' + escape(confidence, quote=True) + '">'
@@ -439,7 +488,7 @@ def html_report(data):
     hash_row = '<p class="hash">SHA-256 ورودی: <code>' + escape(source_hash) + '</code></p>' if source_hash else ''
     summary = data["stats"].get("annotation_summary")
     annotation_section = ''
-    if summary is not None or data["stats"].get("review_document") is not None:
+    if summary is not None or data["stats"].get("review_document") is not None or unified is not None:
         summary = summary or {}
         annotation_section = ('<section class="notes"><h2>کامنت‌ها و هایلایت‌های گزارش و نسخهٔ بازبینی</h2>'
                               + ''.join('<p>' + escape(line) + '</p>' for line in annotation_summary_lines(data["stats"]))

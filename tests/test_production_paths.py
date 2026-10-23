@@ -70,7 +70,7 @@ class ProductionPathTests(unittest.TestCase):
     def test_complete_word_job_defaults_to_word_and_keeps_optional_reports(self):
         delivered, _ = self.run_document(name="پژوهش" * 60 + ".docx")
         self.assertEqual({".docx"}, {Path(name).suffix for name in delivered})
-        self.assertEqual(2, len(delivered))
+        self.assertEqual(1, len(delivered))
         reports = bot.reports.get(123, 123)
         self.assertEqual({"html", "txt"}, set(reports))
         self.assertIn("common_mistake", reports["html"].decode("utf-8"))
@@ -78,9 +78,7 @@ class ProductionPathTests(unittest.TestCase):
                                          if name.startswith("نسخه-بازبینی-"))))
         self.assertEqual("بخاطر نمونه ها بررسی شد.", result.paragraphs[0].text)
         self.assertGreater(len(result.comments), 0)
-        complete = Document(io.BytesIO(next(content for name, content in delivered.items()
-                                           if name.startswith("همه-ایرادها-"))))
-        self.assertGreater(len(complete.comments), len(result.comments))
+        self.assertIn("یافته‌های تکمیلی بازبینی", "\n".join(p.text for p in result.paragraphs))
 
     def test_delivery_failure_does_not_blame_a_valid_document(self):
         _, send = self.run_document(fail_delivery=True)

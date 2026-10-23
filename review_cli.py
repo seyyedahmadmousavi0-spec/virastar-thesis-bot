@@ -20,11 +20,11 @@ def main(argv=None, *, engine=None):
     parser.add_argument("--text", action="store_true", help="خواندن ورودی به‌عنوان متن UTF-8")
     parser.add_argument("--format", choices=("text", "json", "html", "csv"), default="text")
     parser.add_argument("--output-dir", help="ذخیرهٔ گزارش‌های HTML، JSON، CSV و متن")
-    parser.add_argument("--annotate", help="مسیر کپی مستقل Word با کامنت")
+    parser.add_argument("--annotate", help="مسیر نسخهٔ بازبینی Word؛ همهٔ یافته‌ها در همین فایل با زرد و کامنت")
     parser.add_argument("--word-report", help="مسیر گزارش مستقل Word؛ همهٔ یافته‌ها با عنوان زرد و کامنت جداگانه")
     parser.add_argument("--annotate-pdf", help="آزمایشی: مسیر کپی PDF با یادداشت در محل‌های قابل تطبیق")
     parser.add_argument("--max-comments", type=int, default=None,
-                        help="سقف اختیاری کامنت‌های نسخهٔ بازبینی (۰ تا ۱۰۰۰۰)؛ پیش‌فرض همهٔ محل‌های قابل تطبیق، ۰ بدون کامنت")
+                        help="سقف اختیاری کامنت در محل متن (۰ تا ۱۰۰۰۰)؛ باقی موارد در بخش بازبینی پایان همان Word می‌آیند")
     parser.add_argument("--include-ambiguous", action="store_true")
     parser.add_argument("--fail-on", choices=("A", "B", "C"), help="بازگرداندن کد ۱ در صورت یافتن این سطح")
     parser.add_argument("--list-rules", action="store_true")
@@ -81,6 +81,9 @@ def main(argv=None, *, engine=None):
             engine.annotate(doc, issues, args.annotate, max_comments=args.max_comments, per_par=None)
             stats["annotation_summary"] = getattr(doc, "_last_annotation_summary", {})
             stats["annotation_format"] = "docx"
+            from unified_word_review import finalize_word_review
+            stats["unified_word_review"] = finalize_word_review(
+                source, args.annotate, issues, stats, rules)
         if args.annotate_pdf:
             if not stats.get("is_pdf"):
                 raise ValueError("--annotate-pdf requires a PDF input")

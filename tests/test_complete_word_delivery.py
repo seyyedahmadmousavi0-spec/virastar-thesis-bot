@@ -49,7 +49,7 @@ class CompleteWordDeliveryTests(unittest.TestCase):
                 patch.object(bot, "send", side_effect=lambda chat, text, **kw: self.messages.append(text) or True), \
                 patch.object(bot, "call", side_effect=AssertionError("Real transport forbidden")):
             if report_error:
-                with patch.object(bot, "write_word_review", side_effect=WordReviewReportError("bounded")):
+                with patch.object(bot, "finalize_word_review", side_effect=WordReviewReportError("bounded")):
                     bot.process_document(7, {"file_name": "study.docx", "file_id": "synthetic"})
             else:
                 bot.process_document(7, {"file_name": "study.docx", "file_id": "synthetic"})
@@ -67,6 +67,7 @@ class CompleteWordDeliveryTests(unittest.TestCase):
         self.assertEqual(" ".join(self.words), reviewed.paragraphs[0].text)
         self.assertEqual(self.words, [run.text for run in self.yellow(reviewed)])
         self.assertEqual(30, self.stats["annotation_summary"]["applied"])
+        self.assertEqual(30, self.stats["unified_word_review"]["comments"])
         self.assertNotIn("review_document", self.stats)
 
     def test_every_manual_structural_and_unsupported_finding_in_complete_word(self):
@@ -77,17 +78,19 @@ class CompleteWordDeliveryTests(unittest.TestCase):
             Issue("PROTECTED", message="مقدار علمی حفظ شود", protected_overlap=True, par_index=0, target_text=self.words[1]),
         ]
         self.run_document()
-        self.assertEqual(2, len(self.sent))
-        original_review = Document(io.BytesIO(self.sent[0][1]))
-        complete = Document(io.BytesIO(self.sent[1][1]))
-        self.assertEqual(30, len(original_review.comments))
+        self.assertEqual(1, len(self.sent))
+        complete = Document(io.BytesIO(self.sent[0][1]))
+        self.assertEqual(" ".join(self.words), complete.paragraphs[0].text)
         self.assertEqual(34, len(complete.comments))
         self.assertEqual(34, len(self.yellow(complete)))
-        self.assertTrue(self.sent[1][0].startswith("همه-ایرادها-"))
-        self.assertIn("گزارش مستقل", self.sent[1][2])
+        self.assertTrue(self.sent[0][0].startswith("نسخه-بازبینی-"))
+        self.assertIn("همین فایل", self.sent[0][2])
+        self.assertIn("یافته‌های تکمیلی بازبینی", "\n".join(p.text for p in complete.paragraphs))
         self.assertIn("34", self.messages[-1])
-        self.assertEqual({"created": True, "findings": 34, "comments": 34, "highlighted": 34,
-                          "filetype": "docx"}, self.stats["review_document"])
+        self.assertEqual({"output_created": True, "requested": 34, "comments": 34, "highlighted": 34,
+                          "source_comments": 30, "appendix_comments": 4,
+                          "exact_comments": 30, "paragraph_comments": 0}, self.stats["unified_word_review"])
+        self.assertNotIn("review_document", self.stats)
         stored = bot.reports.get(7, 7)
         self.assertEqual({"html", "txt"}, set(stored))
         for data in stored.values():
@@ -95,14 +98,14 @@ class CompleteWordDeliveryTests(unittest.TestCase):
             for rule in ("MISSING", "FOOTNOTE", "MANUAL", "PROTECTED"):
                 self.assertIn(rule, text)
 
-    def test_full_review_failure_sends_all_reports_and_keeps_source_copy(self):
+    def test_full_review_failure_sends_reports_without_a_partial_word(self):
         self.findings.append(Issue("MISSING", message="بخشی یافت نشد", confidence="B"))
         self.run_document(report_error=True)
-        self.assertEqual([".docx", ".html", ".txt"], [Path(name).suffix for name, _, _ in self.sent])
-        self.assertFalse(self.stats["review_document"]["created"])
+        self.assertEqual([".html", ".txt"], [Path(name).suffix for name, _, _ in self.sent])
+        self.assertFalse(self.stats["unified_word_review"]["output_created"])
         self.assertIn("آماده نشد", self.messages[-1])
         self.assertIn("MISSING", self.sent[-1][1].decode("utf-8"))
-        self.assertEqual(30, len(Document(io.BytesIO(self.sent[0][1])).comments))
+        self.assertNotIn("نسخهٔ بازبینی آماده است", self.messages[-1])
 
 
 if __name__ == "__main__":

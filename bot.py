@@ -23,7 +23,8 @@ from doc_guard import DocumentGuard, safe_filename, validate_document
 from bot_runtime import JobGate, ThreadLocalHTTP, env_integer, validated_base_url
 from report_artifacts import PRODUCT_VERSION, write_artifacts
 from report_store import ReportStore
-from word_review_report import WordReviewReportError, write_word_review
+from word_review_report import WordReviewReportError
+from unified_word_review import finalize_word_review
 
 def _load_env_file():
     """اگر فایل .env کنار bot.py باشد، متغیرها را از آن می‌خواند (BALE_TOKEN=...)."""
@@ -92,7 +93,7 @@ _last_poll_monotonic = None
 _health_server = None
 reports = ReportStore(ttl_seconds=REPORT_TTL_MINUTES * 60,
                       max_bytes=REPORT_CACHE_MB * 1024 * 1024)
-# Large companion reports should not hold two Word DOMs on a free host.
+# Build complete review Word files one at a time on a free host.
 _word_review_lock = threading.Lock()
 
 WELCOME = (
@@ -128,8 +129,8 @@ HELP = (
     "• دستور /article برای مقالات پژوهشی و علمی.\n"
     "• دستور /english برای بازبینی قاعده‌محور متون انگلیسی.\n\n"
     "۲) ارسال ورودی:\n"
-    "• فایل Word (.docx): یک کپی با هایلایت و کامنت‌های کوتاه دریافت می‌کنید؛ دستور /annotate لازم نیست. فایل اصلی و متن تغییر نمی‌کنند.\n"
-    "  سقف جداگانه‌ای برای تعداد کامنت‌ها در حالت پیش‌فرض نیست. اگر بعضی موارد محل امنی در سند نداشته باشند، Word «همهٔ ایرادها» هم ارسال می‌شود؛ هر مورد در آن کامنت و عنوان زرد دارد.\n"
+    "• فایل Word (.docx): یک کپی با هایلایت و کامنت‌های کوتاه دریافت می‌کنید؛ دستور /annotate لازم نیست. فایل ورودی و متن پایان‌نامه بازنویسی نمی‌شوند.\n"
+    "  همهٔ یافته‌ها داخل همین Word کامنت و زرد می‌شوند. موارد بدون محل امن در متن، در بخش «یافته‌های تکمیلی بازبینی» در انتهای همان فایل قرار می‌گیرند.\n"
     "• فایل PDF: خلاصه و گزارش صفحه‌دار؛ برای صفحات تصویری استخراج متن انجام نمی‌شود. نشانه‌گذاری PDF فقط در حالت آزمایشی میزبان و برای محل‌های قابل تطبیق انجام می‌شود.\n"
     "• متن مستقیم: یک یا چند بند از متن خود را بفرستید تا فوراً بررسی گردد.\n\n"
     "۳) /report گزارش HTML و TXT آخرین بررسی شما، /report html یا /report txt فقط یک قالب را می‌فرستد.\n"
@@ -282,11 +283,11 @@ COMMENTS_HELP = (
     "در نسخهٔ موبایل، نمایش کامنت‌ها معمولاً از منوی بازبینی یا علامت گفت‌وگو فعال می‌شود.\n"
     "زردی در «نسخهٔ بازبینی» محدودهٔ پیشنهاد را نشان می‌دهد؛ کامنت‌های مربوط به کل پاراگراف با همین عنوان مشخص‌اند. "
     "داخل کامنت شناسهٔ قاعده، دلیل و پیشنهاد کوتاه آمده است.\n"
-    "در Word «همهٔ ایرادها»، هر یافته عنوان زرد و کامنت دارد؛ این فایل گزارش مستقل است. "
-    "موارد بدون محل مطمئن یا مربوط به نبودن یک بخش، روی عبارت دیگری در متن اصلی نشان‌گذاری نمی‌شوند.\n"
+    "همهٔ یافته‌ها در همین فایل‌اند. موارد بدون محل مطمئن یا مربوط به نبودن یک بخش، در بخش «یافته‌های تکمیلی بازبینی» "
+    "در انتهای همان Word، عنوان زرد و کامنت مستقل دارند؛ این بخش افزودهٔ ربات است.\n"
     "A: اطمینان بالا · B: نیازمند بازبینی · C: مبهم و فقط برای بررسی دستی. "
     "این حروف شدت خطا یا درصد دقت نیستند.\n"
-    "هیچ پیشنهادی خودکار اعمال نشده است. گزارش کامل و علت درج‌نشدن بعضی کامنت‌ها: /report"
+    "هیچ پیشنهادی خودکار اعمال نشده است. گزارش کامل و علت انتقال بعضی موارد به بخش انتهایی: /report"
 )
 
 
@@ -361,7 +362,6 @@ def process_document(chat_id, doc, annotate_requested=False, mode=None, sender_i
             guard.verify_original_intact()
             progress.update("⏳ بررسی انجام شد؛ خروجی بازبینی در حال آماده‌سازی است…")
             output = None
-            review_output = None
             review_failed = False
             if is_docx and d is not None:
                 out_docx = os.path.join(tmp, "نسخه-بازبینی-" + name)
@@ -378,26 +378,26 @@ def process_document(chat_id, doc, annotate_requested=False, mode=None, sender_i
                 stats["annotation_format"] = "pdf"
                 if stats["annotation_summary"].get("output_created"):
                     output = out_pdf
-            # Release the parsed thesis before constructing a separate full review.
+            # Release the parsed thesis before completing the same review file.
             d = None
             gc.collect()
-            if is_docx and issues and (not output or
-                    stats.get("annotation_summary", {}).get("applied", 0) < len(issues)):
+            if is_docx:
                 try:
-                    review_path = os.path.join(tmp, "همه-ایرادها-" + name)
+                    if not output:
+                        raise WordReviewReportError("Source review copy was not created")
                     with _word_review_lock:
-                        review = write_word_review(review_path, issues, stats, rules, source_path=work_src)
-                    stats["review_document"] = {
-                        "created": review["output_created"], "findings": review["requested"],
-                        "comments": review["comments"], "highlighted": review["highlighted_entries"],
-                        "filetype": "docx",
-                    }
-                    if review["output_created"]:
-                        review_output = review_path
+                        stats["unified_word_review"] = finalize_word_review(work_src, output, issues, stats, rules)
+                    if not stats["unified_word_review"].get("output_created"):
+                        raise WordReviewReportError("Complete review copy was not created")
                 except (WordReviewReportError, OSError):
-                    log.warning("Complete Word review generation failed")
-                    stats["review_document"] = {"created": False, "findings": len(issues),
-                                                "comments": 0, "highlighted": 0, "filetype": "docx"}
+                    log.warning("Unified Word review generation failed")
+                    source_comments = stats.get("annotation_summary", {}).get("applied", 0)
+                    stats["unified_word_review"] = {"output_created": False, "requested": len(issues),
+                        "source_comments": source_comments, "appendix_comments": 0,
+                        "comments": source_comments, "highlighted": source_comments,
+                        "exact_comments": stats.get("annotation_summary", {}).get("exact_applied", 0),
+                        "paragraph_comments": stats.get("annotation_summary", {}).get("paragraph_applied", 0)}
+                    output = None
                     review_failed = True
             guard.verify_original_intact()
             artifacts = write_artifacts(os.path.join(tmp, "reports"), issues, stats, rules,
@@ -405,9 +405,10 @@ def process_document(chat_id, doc, annotate_requested=False, mode=None, sender_i
                                         text_report=checker.build_report(issues, stats, rules))
             cached = _cache_reports(chat_id, sender_id, artifacts)
             if output:
-                send_file(chat_id, output, "نسخهٔ بازبینی سند: محل‌های قابل تأیید با زرد و کامنت مشخص شده‌اند؛ کامنت سطح پاراگراف مربوط به کل آن است. راهنما: /comments")
-            if review_output:
-                send_file(chat_id, review_output, "همهٔ ایرادها در Word: هر مورد عنوان زرد و کامنت دارد. این فایل گزارش مستقل است؛ محل و توضیح هر مورد را داخل آن ببینید.")
+                caption = (f"نسخهٔ بازبینی سند: همهٔ {len(issues)} یافته در همین فایل کامنت و زرد شده‌اند. "
+                           "موارد دارای محل مشخص کنار متن‌اند؛ بقیه در بخش «یافته‌های تکمیلی بازبینی» در انتهای همین Word هستند. راهنما: /comments"
+                           if is_docx else "نسخهٔ بازبینی PDF؛ فقط محل‌های قابل تأیید نشانه‌گذاری شده‌اند. راهنما: /comments")
+                send_file(chat_id, output, caption)
             summary = checker.build_summary(issues, stats, rules)
             if not output and is_docx and stats.get("analysis_status") != "failed":
                 summary += "\nنسخهٔ بازبینی سند آماده نشد؛ جزئیات در گزارش است."
@@ -418,7 +419,7 @@ def process_document(chat_id, doc, annotate_requested=False, mode=None, sender_i
             if not output and is_pdf:
                 send_file(chat_id, artifacts["txt"], "گزارش PDF با محل و شمارهٔ صفحه؛ بررسی علمی محتوا نیازمند بازبینی انسانی است.")
             if not cached or review_failed:
-                caption = ("Word همهٔ ایرادها آماده نشد؛ همهٔ یافته‌ها در این گزارش آمده‌اند."
+                caption = ("Word شامل همهٔ یافته‌ها آماده نشد؛ همهٔ یافته‌ها در این گزارش آمده‌اند."
                            if review_failed else "گزارش کامل؛ نسخه‌ای برای دریافت بعدی نگهداری نشد.")
                 send_file(chat_id, artifacts["html"], caption)
                 if not (is_pdf and not output):

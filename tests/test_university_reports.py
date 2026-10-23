@@ -40,7 +40,7 @@ class UniversityReportTests(unittest.TestCase):
         self.assertNotIn('class="notes university-profile"', html_report(ordinary))
         result = report_data([], self.stats, {})
         self.assertEqual("2.0", result["schema_version"])
-        self.assertEqual("2.3.0", PRODUCT_VERSION)
+        self.assertEqual("2.3.1", PRODUCT_VERSION)
         self.assertEqual("master", result["stats"]["university_profile"]["degree"])
 
     def test_nested_private_configuration_is_never_exported(self):

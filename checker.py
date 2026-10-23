@@ -32,7 +32,8 @@ import safe_annotator
 from rule_registry import FindingBuffer, bounded_findings
 from report_artifacts import (ANNOTATION_REASONS, COVERAGE_LABELS, STORY_LABELS,
                               ambiguous_count, annotation_format_label, category_label, location_label, safe_annotation_summary,
-                              university_profile_lines, annotation_summary_lines, safe_review_document_summary)
+                              university_profile_lines, annotation_summary_lines, safe_review_document_summary,
+                              safe_unified_word_review)
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 ZWNJ = "\u200c"
@@ -1466,10 +1467,11 @@ def build_report(issues, stats, rules, examples=None):
         lines.append(f"📌 {cat_name}: {len(cat_issues)} مورد")
 
     annotation = safe_annotation_summary(stats.get("annotation_summary"))
+    unified = safe_unified_word_review(stats.get("unified_word_review"))
     output_label = annotation_format_label(stats)
     records = {record.get("index"): record for record in (annotation or {}).get("records", [])}
     indices = {id(issue): index for index, issue in enumerate(issues)}
-    if annotation or stats.get("review_document"):
+    if annotation or stats.get("review_document") or stats.get("unified_word_review"):
         lines += ["", "کامنت‌ها و هایلایت‌های Word و نسخهٔ بازبینی"]
         lines.extend(annotation_summary_lines(stats))
     if stats.get("coverage"):
@@ -1521,6 +1523,8 @@ def build_report(issues, stats, rules, examples=None):
                     state = f"در {output_label} کامنت شد" if record.get("status") == "applied" else ANNOTATION_REASONS.get(record.get("reason"), f"در {output_label} کامنت نشد")
                     if record.get("status") == "applied" and record.get("anchor_scope") == "paragraph":
                         state += "؛ در سطح کل پاراگراف"
+                    if record.get("status") != "applied" and unified and unified["output_created"]:
+                        state += "؛ در بخش «یافته‌های تکمیلی بازبینی» همین Word کامنت و زرد شد؛ محل دقیق در متن اصلی نیست"
                     row += f"\n    وضعیت {output_label}: {state}"
                 lines.append(row + "\n")
                 issue_counter += 1
@@ -1530,7 +1534,9 @@ def build_report(issues, stats, rules, examples=None):
         "هـ) تعهدنامه حفاظت از داده و راهنمای پژوهشگر",
         "──────────────────────────────────────────────────────────────",
         "۱. مطابق اصل تغییرناپذیری، فایل اصلی کاربر صرفاً خوانده شده و در مسیر تحلیل برای ذخیره‌سازی باز نمی‌شود و کنترل هش برای ورودی فایل فعال است.",
-        "۲. پیشنهادها خودکار روی متن، فرمول‌ها، یکاها، ارقام و نام‌های خاص اعمال نشده‌اند؛ نسخهٔ بازبینی فقط نشانه‌گذاری دارد.",
+        ("۲. پیشنهادها خودکار روی متن، فرمول‌ها، یکاها، ارقام و نام‌های خاص اعمال نشده‌اند؛ نسخهٔ بازبینی، نشانه‌گذاری و بخش افزودهٔ «یافته‌های تکمیلی بازبینی» دارد."
+         if unified and unified.get("appendix_comments", 0) else
+         "۲. پیشنهادها خودکار روی متن، فرمول‌ها، یکاها، ارقام و نام‌های خاص اعمال نشده‌اند؛ نسخهٔ بازبینی فقط نشانه‌گذاری دارد."),
         "۳. پیشنهادات سطح B و C صرفاً جنبه مشورتی داشته و تصمیم نهایی با نویسنده و استاد راهنما است.",
         "══════════════════════════════════════════════════════════════"
     ]
@@ -1544,9 +1550,10 @@ def build_summary(issues, stats, rules):
     conf = Counter(getattr(it, "confidence", "A") for it in issues)
     ambiguous = ambiguous_count(issues, stats, rules)
     annotation = safe_annotation_summary(stats.get("annotation_summary"))
+    unified = safe_unified_word_review(stats.get("unified_word_review"))
     output_label = annotation_format_label(stats)
     title = ("❌ بررسی سند تکمیل نشد؛ علت در گزارش آمده است." if stats.get("analysis_status") == "failed"
-             else "📄 نسخهٔ بازبینی آماده است." if annotation and annotation.get("output_created")
+             else "📄 نسخهٔ بازبینی آماده است." if (unified or annotation or {}).get("output_created")
              else "📄 نتیجهٔ بررسی آماده است.")
     lines = [
         title,
@@ -1557,7 +1564,13 @@ def build_summary(issues, stats, rules):
         lines.insert(1, ("🏛 " if stats["mode"] in kashan_checker.MODES else "الگوی بررسی: ") + mode_title)
     if stats.get("ambiguous_candidates", 0):
         lines.append(f"از موارد مبهم، {conf['C']} مورد در گزارش است؛ {stats['ambiguous_candidates']} نامزد فقط شمارش شده و وارد فهرست یافته‌ها نشده است.")
-    if annotation:
+    if unified:
+        if unified["output_created"]:
+            lines.append(f"همهٔ {unified.get('requested', len(issues))} یافته در همین Word: {unified.get('comments', 0)} کامنت و هایلایت زرد.")
+            lines.append(f"کنار متن: {unified.get('source_comments', 0)} مورد · بخش «یافته‌های تکمیلی بازبینی» در انتهای همین فایل: {unified.get('appendix_comments', 0)} مورد.")
+        else:
+            lines.append("ساخت Word شامل همهٔ یافته‌ها تکمیل نشد؛ همهٔ یافته‌ها در HTML و TXT ارسالی هستند.")
+    elif annotation:
         lines.append(f"از {annotation.get('requested', len(issues))} مورد گزارش‌شده، {annotation.get('applied', 0)} مورد در {output_label} کامنت شد.")
         if output_label == "Word" and "paragraph_applied" in annotation:
             lines.append(f"محل دقیق: {annotation.get('exact_applied', 0)} · در سطح پاراگراف: {annotation['paragraph_applied']}؛ موارد ثبت‌شده زرد شده‌اند.")
