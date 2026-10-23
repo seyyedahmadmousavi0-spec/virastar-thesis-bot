@@ -12,7 +12,7 @@ import re
 from doc_guard import atomic_write
 
 SCHEMA_VERSION = "2.0"
-PRODUCT_VERSION = "2.3.1"
+PRODUCT_VERSION = "2.3.2"
 CONFIDENCE_LABELS = {"A": "اطمینان بالا", "B": "نیازمند بازبینی", "C": "مبهم"}
 CATEGORY_LABELS = {
     "general": "بازبینی عمومی", "english_grammar": "دستور زبان انگلیسی",
@@ -121,27 +121,52 @@ def safe_review_document_summary(summary):
 
 
 def safe_unified_word_review(summary):
-    """Export counts for the single reviewed source Word, without private paths."""
+    """Export existing-text annotation counts and known context-anchor identities."""
     if not isinstance(summary, dict):
         return None
     safe = {"output_created": summary.get("output_created") is True}
     safe.update({key: max(0, value) for key in (
-        "requested", "source_comments", "appendix_comments", "comments", "highlighted",
+        "requested", "source_comments", "context_comments", "appendix_comments", "comments", "highlighted",
         "exact_comments", "paragraph_comments")
         if isinstance((value := summary.get(key)), int) and not isinstance(value, bool)})
+    if isinstance(summary.get("context_records"), list):
+        safe["context_records"] = []
+        for record in summary["context_records"]:
+            if not isinstance(record, dict):
+                continue
+            index = record.get("index")
+            if not isinstance(index, int) or isinstance(index, bool) or index < 0:
+                continue
+            row = {"index": index}
+            paragraph = record.get("anchor_par_index")
+            if isinstance(paragraph, int) and not isinstance(paragraph, bool) and paragraph >= -1:
+                row["anchor_par_index"] = paragraph
+            path = record.get("anchor_xml_path")
+            if isinstance(path, str) and re.fullmatch(
+                    r"/w:document/w:body(?:/w:[A-Za-z][A-Za-z0-9]*(?:\[[1-9][0-9]*\])?)+", path):
+                row["anchor_xml_path"] = path
+            if record.get("scope") in ("paragraph", "document", "story"):
+                row["scope"] = record["scope"]
+            story = record.get("source_story")
+            if isinstance(story, str) and story in {"", *STORY_LABELS}:
+                row["source_story"] = story
+            if isinstance(record.get("reason"), str) and record["reason"] in ANNOTATION_REASONS:
+                row["reason"] = record["reason"]
+            safe["context_records"].append(row)
     return safe
 
 
 def _unified_word_review_complete(summary):
     return (summary is not None and summary.get("output_created")
             and all(key in summary for key in ("requested", "comments", "highlighted",
-                                               "source_comments", "appendix_comments"))
+                                               "source_comments", "context_comments"))
             and summary["comments"] == summary["requested"] == summary["highlighted"]
-            and summary["source_comments"] + summary["appendix_comments"] == summary["requested"])
+            and summary["source_comments"] + summary["context_comments"] == summary["requested"]
+            and summary.get("appendix_comments", 0) == 0)
 
 
 def annotation_summary_lines(stats):
-    """Separate the original text anchors from the appended review section."""
+    """Separate certified source locations from qualified existing-text anchors."""
     lines = []
     summary = safe_annotation_summary(stats.get("annotation_summary"))
     unified = safe_unified_word_review(stats.get("unified_word_review"))
@@ -150,21 +175,21 @@ def annotation_summary_lines(stats):
             lines.append("همان Word بازبینی: از " + str(unified.get("requested", 0)) + " مورد، "
                          + str(unified.get("comments", 0)) + " مورد کامنت و "
                          + str(unified.get("highlighted", 0)) + " مورد هایلایت زرد دارد.")
-            lines.append("محل ثبت در همین فایل: " + str(unified.get("source_comments", 0))
-                         + " مورد در متن سند و " + str(unified.get("appendix_comments", 0))
-                         + " مورد در بخش «یافته‌های تکمیلی بازبینی» در پایان همان Word.")
+            lines.append("محل ثبت در همان متن موجود: " + str(unified.get("source_comments", 0))
+                         + " مورد در محل قابل تأیید و " + str(unified.get("context_comments", 0))
+                         + " مورد با کامنت کلی/زمینه‌ای روی متن موجود.")
             if not _unified_word_review_complete(unified):
                 lines.append("ثبت کامنت و هایلایت همهٔ موارد در همین Word تکمیل نشده است؛ تعدادهای بالا را بررسی کنید.")
-            if unified.get("appendix_comments", 0):
-                lines.append("بخش «یافته‌های تکمیلی بازبینی» به نسخهٔ بازبینی افزوده شده است؛ متن آن از نویسنده نیست. "
-                             "عنوان زرد و کامنت هر مورد در این بخش، محل دقیق ایراد در متن اصلی را نشان نمی‌دهد.")
+            if unified.get("context_comments", 0):
+                lines.append("کامنت کلی/زمینه‌ای در سطح پاراگراف، بخش یا سند است؛ عبارت زردشده لزوماً خطا نیست "
+                             "و محل دقیق ایراد را تأیید نمی‌کند. نوع ارجاع داخل کامنت مشخص شده است.")
         else:
             lines.append("تولید Word یکپارچه تکمیل نشد؛ ثبت همهٔ موارد در همین فایل تأیید نمی‌شود و جزئیات در گزارش باقی است.")
     if summary is not None:
         label = annotation_format_label(stats)
         if unified is not None and label == "Word":
-            lines.append("ممیزی محل‌های متن اصلی: از " + str(summary.get("requested", 0)) + " مورد، "
-                         + str(summary.get("applied", 0)) + " مورد در متن اصلی کامنت شد.")
+            lines.append("ممیزی محل‌های قابل تأیید: از " + str(summary.get("requested", 0)) + " مورد، "
+                         + str(summary.get("applied", 0)) + " مورد در محل قابل تأیید کامنت شد.")
         else:
             lines.append("از " + str(summary.get("requested", 0)) + " مورد، "
                          + str(summary.get("applied", 0)) + " مورد در " + label + " کامنت شد.")
@@ -177,14 +202,15 @@ def annotation_summary_lines(stats):
         if "highlighted" in summary and unified is None:
             lines.append("تعداد مواردِ دارای کامنت و هایلایت زرد: " + str(summary["highlighted"]) + ".")
         if "max_comments" in summary:
-            lines.append("سقف تعداد کامنت: " + ("بدون سقف تعداد" if summary["max_comments"] is None
-                                               else str(summary["max_comments"])) + ".")
+            limit_label = "سقف کامنت در محل‌های قابل تأیید: " if unified is not None else "سقف تعداد کامنت: "
+            lines.append(limit_label + ("بدون سقف تعداد" if summary["max_comments"] is None
+                                        else str(summary["max_comments"])) + ".")
         if not summary.get("output_created"):
             lines.append("تولید نسخهٔ بازبینی تکمیل نشد؛ جزئیات در گزارش باقی است.")
         if summary.get("experimental"):
             lines.append("نشانه‌گذاری PDF آزمایشی است؛ نمایش هایلایت و یادداشت فارسی در PDFخوان شما باید بررسی شود.")
         if unified is not None and summary.get("reasons"):
-            lines.append("علت درج‌نشدن در متن اصلی (ثبت در بخش یافته‌های تکمیلی بازبینی جداگانه شمرده شده است):")
+            lines.append("علت انتخاب کامنت کلی/زمینه‌ای به‌جای محل دقیق برای بعضی موارد:")
         for reason, count in summary.get("reasons", {}).items():
             lines.append(ANNOTATION_REASONS[reason] + ": " + str(count))
     review = safe_review_document_summary(stats.get("review_document"))
@@ -361,6 +387,11 @@ def report_data(issues, stats, rules):
     rows = []
     annotation = safe_annotation_summary(stats.get("annotation_summary"))
     records = {record.get("index"): record for record in (annotation or {}).get("records", [])}
+    unified_word_review = safe_unified_word_review(stats.get("unified_word_review"))
+    context_records = (unified_word_review or {}).get("context_records", [])
+    context_indices = Counter(record["index"] for record in context_records)
+    context_by_index = {record["index"]: record for record in context_records
+                        if context_indices[record["index"]] == 1}
     for index, issue in enumerate(issues):
         row = issue.to_dict()
         identity = [stats.get("file_sha256") or stats.get("analysis_text_sha256")]
@@ -372,6 +403,10 @@ def report_data(issues, stats, rules):
         if record is not None and all(record.get(key, row.get(key)) == row.get(key)
                                       for key in ("rule_id", "block_id", "char_start", "char_end")):
             row["annotation"] = {key: record[key] for key in ("status", "reason", "anchor_scope") if key in record}
+            if (record.get("status") == "unapplied" and _unified_word_review_complete(unified_word_review)
+                    and index in context_by_index):
+                row["context_annotation"] = {key: value for key, value in context_by_index[index].items()
+                                             if key != "index"}
         rows.append(row)
     # Only known analysis statistics are exported; arbitrary caller metadata stays private.
     keys = {"mode", "words", "body_words", "paragraphs", "tables", "images", "chapters", "total_pages",
@@ -388,7 +423,6 @@ def report_data(issues, stats, rules):
     review_document = safe_review_document_summary(stats.get("review_document"))
     if review_document is not None:
         safe_stats["review_document"] = review_document
-    unified_word_review = safe_unified_word_review(stats.get("unified_word_review"))
     if unified_word_review is not None:
         safe_stats["unified_word_review"] = unified_word_review
     profile = safe_university_profile(stats.get("university_profile"))
@@ -460,7 +494,13 @@ def html_report(data):
                            if annotation.get("status") == "applied" else
                            ANNOTATION_REASONS.get(annotation.get("reason"), f"در {output_label} کامنت نشد")) if annotation else ""
         if unified_complete and annotation.get("status") == "unapplied":
-            annotation_text += "؛ در بخش یافته‌های تکمیلی بازبینی همین Word کامنت و زرد شد؛ محل دقیق در متن اصلی نیست"
+            annotation_text += "؛ کامنت کلی/زمینه‌ای روی متن موجود؛ عبارت زردشده لزوماً خطا نیست"
+            context = row.get("context_annotation", {})
+            paragraph_index = context.get("anchor_par_index", -1)
+            if isinstance(paragraph_index, int) and not isinstance(paragraph_index, bool) and paragraph_index >= 0:
+                annotation_text += "؛ محل کامنت زمینه‌ای: پاراگراف " + str(paragraph_index + 1)
+            elif "/w:tbl" in context.get("anchor_xml_path", ""):
+                annotation_text += "؛ محل کامنت زمینه‌ای: پاراگرافی از جدول در همین سند"
         cards.append(
             '<article class="finding" data-confidence="' + escape(confidence, quote=True) + '">'
             '<div class="finding-top"><span class="badge ' + escape(confidence, quote=True) + '">'

@@ -51,7 +51,7 @@ class WordReviewCliTests(unittest.TestCase):
         self.assertEqual(len(report["findings"]), len(Document(reviewed).comments))
         source_document = Document(self.source)
         self.assertEqual([p.text for p in source_document.paragraphs],
-                         [p.text for p in Document(reviewed).paragraphs[:len(source_document.paragraphs)]])
+                         [p.text for p in Document(reviewed).paragraphs])
         review = report["stats"]["review_document"]
         expected = len(report["findings"])
         self.assertEqual({"created": True, "findings": expected, "comments": expected,
@@ -64,7 +64,7 @@ class WordReviewCliTests(unittest.TestCase):
         self.assertEqual(review, saved["stats"]["review_document"])
         self.assertNotIn(str(complete), output)
 
-    def test_explicit_zero_places_all_findings_in_same_word_appendix(self):
+    def test_explicit_zero_gives_all_findings_existing_text_context_anchors(self):
         reviewed = self.root / "reviewed.docx"
         complete = self.root / "all-findings.docx"
         result, output, errors = self.run_cli([
@@ -76,11 +76,14 @@ class WordReviewCliTests(unittest.TestCase):
         self.assertEqual(0, report["stats"]["annotation_summary"]["applied"])
         unified = report["stats"]["unified_word_review"]
         self.assertEqual(0, unified["source_comments"])
-        self.assertEqual(len(report["findings"]), unified["appendix_comments"])
+        self.assertEqual(len(report["findings"]), unified["context_comments"])
+        self.assertEqual(0, unified.get("appendix_comments", 0))
         self.assertEqual(len(report["findings"]), len(Document(reviewed).comments))
-        original_paragraphs = Document(reviewed).paragraphs[:35]
-        self.assertTrue(all(not any(run.font.highlight_color == WD_COLOR_INDEX.YELLOW
-                                    for run in paragraph.runs) for paragraph in original_paragraphs))
+        original_paragraphs = Document(reviewed).paragraphs
+        self.assertEqual([p.text for p in Document(self.source).paragraphs],
+                         [p.text for p in original_paragraphs])
+        self.assertTrue(any(run.font.highlight_color == WD_COLOR_INDEX.YELLOW
+                            for paragraph in original_paragraphs for run in paragraph.runs))
         self.assertEqual(len(report["findings"]), len(Document(complete).comments))
 
     def test_positive_limit_does_not_truncate_complete_word_report(self):

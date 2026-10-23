@@ -1524,7 +1524,7 @@ def build_report(issues, stats, rules, examples=None):
                     if record.get("status") == "applied" and record.get("anchor_scope") == "paragraph":
                         state += "؛ در سطح کل پاراگراف"
                     if record.get("status") != "applied" and unified and unified["output_created"]:
-                        state += "؛ در بخش «یافته‌های تکمیلی بازبینی» همین Word کامنت و زرد شد؛ محل دقیق در متن اصلی نیست"
+                        state += "؛ کامنت کلی/زمینه‌ای به متن موجود وصل و محل اتصال زرد شد؛ عبارت انتخابی لزوماً خطا نیست"
                     row += f"\n    وضعیت {output_label}: {state}"
                 lines.append(row + "\n")
                 issue_counter += 1
@@ -1534,9 +1534,7 @@ def build_report(issues, stats, rules, examples=None):
         "هـ) تعهدنامه حفاظت از داده و راهنمای پژوهشگر",
         "──────────────────────────────────────────────────────────────",
         "۱. مطابق اصل تغییرناپذیری، فایل اصلی کاربر صرفاً خوانده شده و در مسیر تحلیل برای ذخیره‌سازی باز نمی‌شود و کنترل هش برای ورودی فایل فعال است.",
-        ("۲. پیشنهادها خودکار روی متن، فرمول‌ها، یکاها، ارقام و نام‌های خاص اعمال نشده‌اند؛ نسخهٔ بازبینی، نشانه‌گذاری و بخش افزودهٔ «یافته‌های تکمیلی بازبینی» دارد."
-         if unified and unified.get("appendix_comments", 0) else
-         "۲. پیشنهادها خودکار روی متن، فرمول‌ها، یکاها، ارقام و نام‌های خاص اعمال نشده‌اند؛ نسخهٔ بازبینی فقط نشانه‌گذاری دارد."),
+        "۲. پیشنهادها خودکار روی متن، فرمول‌ها، یکاها، ارقام و نام‌های خاص اعمال نشده‌اند؛ نسخهٔ بازبینی فقط نشانه‌گذاری دارد.",
         "۳. پیشنهادات سطح B و C صرفاً جنبه مشورتی داشته و تصمیم نهایی با نویسنده و استاد راهنما است.",
         "══════════════════════════════════════════════════════════════"
     ]
@@ -1567,7 +1565,7 @@ def build_summary(issues, stats, rules):
     if unified:
         if unified["output_created"]:
             lines.append(f"همهٔ {unified.get('requested', len(issues))} یافته در همین Word: {unified.get('comments', 0)} کامنت و هایلایت زرد.")
-            lines.append(f"کنار متن: {unified.get('source_comments', 0)} مورد · بخش «یافته‌های تکمیلی بازبینی» در انتهای همین فایل: {unified.get('appendix_comments', 0)} مورد.")
+            lines.append(f"محل قابل‌تأیید: {unified.get('source_comments', 0)} مورد · ارجاع کلی/زمینه‌ای: {unified.get('context_comments', 0)} مورد؛ همه روی متن موجود سند هستند.")
         else:
             lines.append("ساخت Word شامل همهٔ یافته‌ها تکمیل نشد؛ همهٔ یافته‌ها در HTML و TXT ارسالی هستند.")
     elif annotation:

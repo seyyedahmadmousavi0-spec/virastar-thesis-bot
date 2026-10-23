@@ -24,7 +24,7 @@ def main(argv=None, *, engine=None):
     parser.add_argument("--word-report", help="مسیر گزارش مستقل Word؛ همهٔ یافته‌ها با عنوان زرد و کامنت جداگانه")
     parser.add_argument("--annotate-pdf", help="آزمایشی: مسیر کپی PDF با یادداشت در محل‌های قابل تطبیق")
     parser.add_argument("--max-comments", type=int, default=None,
-                        help="سقف اختیاری کامنت در محل متن (۰ تا ۱۰۰۰۰)؛ باقی موارد در بخش بازبینی پایان همان Word می‌آیند")
+                        help="سقف اختیاری کامنت دقیق/پاراگرافی (۰ تا ۱۰۰۰۰)؛ باقی موارد با ارجاع صریح در متن موجود همان Word کامنت می‌گیرند")
     parser.add_argument("--include-ambiguous", action="store_true")
     parser.add_argument("--fail-on", choices=("A", "B", "C"), help="بازگرداندن کد ۱ در صورت یافتن این سطح")
     parser.add_argument("--list-rules", action="store_true")

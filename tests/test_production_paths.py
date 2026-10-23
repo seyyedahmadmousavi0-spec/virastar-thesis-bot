@@ -78,7 +78,7 @@ class ProductionPathTests(unittest.TestCase):
                                          if name.startswith("نسخه-بازبینی-"))))
         self.assertEqual("بخاطر نمونه ها بررسی شد.", result.paragraphs[0].text)
         self.assertGreater(len(result.comments), 0)
-        self.assertIn("یافته‌های تکمیلی بازبینی", "\n".join(p.text for p in result.paragraphs))
+        self.assertEqual(["بخاطر نمونه ها بررسی شد."], [p.text for p in result.paragraphs])
 
     def test_delivery_failure_does_not_blame_a_valid_document(self):
         _, send = self.run_document(fail_delivery=True)

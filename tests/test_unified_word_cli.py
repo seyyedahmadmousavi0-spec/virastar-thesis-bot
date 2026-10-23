@@ -80,14 +80,21 @@ class UnifiedWordCliTests(unittest.TestCase):
         self.assertEqual(len(self.issues), summary["comments"])
         self.assertEqual(len(self.issues), summary["highlighted"])
         self.assertEqual(expected_source, summary["source_comments"])
-        self.assertEqual(len(self.issues) - expected_source, summary["appendix_comments"])
+        self.assertEqual(len(self.issues) - expected_source, summary["context_comments"])
+        self.assertEqual(0, summary.get("appendix_comments", 0))
         original = Document(self.source)
         self.assertEqual([p.text for p in original.paragraphs],
-                         [p.text for p in result.paragraphs[:len(original.paragraphs)]])
-        self.assertIn("یافته‌های تکمیلی بازبینی", "\n".join(p.text for p in result.paragraphs[28:]))
-        self.assertEqual(len(self.issues) - expected_source,
-                         sum(run.font.highlight_color == WD_COLOR_INDEX.YELLOW
-                             for p in result.paragraphs[28:] for run in p.runs))
+                         [p.text for p in result.paragraphs])
+        self.assertTrue(any(run.font.highlight_color == WD_COLOR_INDEX.YELLOW
+                            for p in result.paragraphs for run in p.runs))
+        structural_comments = [comment.text for comment in result.comments
+                               if "missing_section" in comment.text]
+        self.assertEqual(1, len(structural_comments))
+        self.assertIn("سطح سند", structural_comments[0])
+        self.assertIn("نیست", structural_comments[0])
+        manual_comments = [comment.text for comment in result.comments if "C" in comment.text]
+        self.assertEqual(1, len(manual_comments))
+        self.assertIn("بررسی دستی", manual_comments[0])
         self.assertNotIn("review_document", report["stats"])
         self.assertEqual({"source.docx", "reviewed.docx"}, {p.name for p in self.root.glob("*.docx")})
 
@@ -103,14 +110,15 @@ class UnifiedWordCliTests(unittest.TestCase):
         reviewed, report = self.run_cli(["--max-comments", "0"])
         self.assert_complete_in_same_word(reviewed, report, expected_source=0)
 
-    def test_no_findings_keeps_copy_identical_and_adds_no_review_section(self):
+    def test_no_findings_keeps_copy_identical_and_adds_no_text(self):
         self.issues.clear()
         reviewed, report = self.run_cli()
         self.assertEqual(self.before, reviewed.read_bytes())
         summary = report["stats"]["unified_word_review"]
         self.assertTrue(summary["output_created"])
         self.assertEqual(0, summary["comments"])
-        self.assertEqual(0, summary["appendix_comments"])
+        self.assertEqual(0, summary["context_comments"])
+        self.assertEqual(0, summary.get("appendix_comments", 0))
         self.assertEqual(28, len(Document(reviewed).paragraphs))
 
     def test_failed_completion_returns_error_before_publishing_report_artifacts(self):

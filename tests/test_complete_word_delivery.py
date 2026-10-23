@@ -82,14 +82,19 @@ class CompleteWordDeliveryTests(unittest.TestCase):
         complete = Document(io.BytesIO(self.sent[0][1]))
         self.assertEqual(" ".join(self.words), complete.paragraphs[0].text)
         self.assertEqual(34, len(complete.comments))
-        self.assertEqual(34, len(self.yellow(complete)))
+        self.assertGreater(len(self.yellow(complete)), 0)
+        self.assertEqual([p.text for p in Document(self.source).paragraphs], [p.text for p in complete.paragraphs])
         self.assertTrue(self.sent[0][0].startswith("نسخه-بازبینی-"))
-        self.assertIn("همین فایل", self.sent[0][2])
-        self.assertIn("یافته‌های تکمیلی بازبینی", "\n".join(p.text for p in complete.paragraphs))
+        self.assertIn("متن موجود", self.sent[0][2])
+        self.assertNotIn("یافته‌های تکمیلی بازبینی", "\n".join(p.text for p in complete.paragraphs))
+        self.assertTrue(any("در سطح سند" in comment.text for comment in complete.comments))
         self.assertIn("34", self.messages[-1])
-        self.assertEqual({"output_created": True, "requested": 34, "comments": 34, "highlighted": 34,
-                          "source_comments": 30, "appendix_comments": 4,
-                          "exact_comments": 30, "paragraph_comments": 0}, self.stats["unified_word_review"])
+        summary = self.stats["unified_word_review"]
+        for key, value in {"output_created": True, "requested": 34, "comments": 34, "highlighted": 34,
+                           "source_comments": 30, "context_comments": 4,
+                           "exact_comments": 30, "paragraph_comments": 0}.items():
+            self.assertEqual(value, summary[key], key)
+        self.assertEqual(0, summary.get("appendix_comments", 0))
         self.assertNotIn("review_document", self.stats)
         stored = bot.reports.get(7, 7)
         self.assertEqual({"html", "txt"}, set(stored))

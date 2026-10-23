@@ -14,7 +14,7 @@ from lxml import etree
 from analysis_model import Issue
 from doc_guard import DocumentIntegrityError, sha256_file
 from safe_annotator import annotate_document
-from unified_word_review import APPENDIX_TITLE, finalize_word_review
+from unified_word_review import finalize_word_review
 from word_review_report import WordReviewReportError
 
 
@@ -49,7 +49,8 @@ class UnifiedWordReviewTests(unittest.TestCase):
         self.assertEqual(original, self.source.read_bytes())
         self.assertEqual(len(issues), result["comments"])
         self.assertEqual(len(issues), result["highlighted"])
-        self.assertEqual(result["requested"], result["source_comments"] + result["appendix_comments"])
+        self.assertEqual(result["requested"], result["source_comments"] + result["context_comments"])
+        self.assertEqual(0, result["appendix_comments"])
         return Document(self.review), result
 
     def test_over_25_findings_all_in_one_word_with_global_numbers(self):
@@ -68,22 +69,23 @@ class UnifiedWordReviewTests(unittest.TestCase):
         reviewed, result = self.finalize(issues, stats)
         self.assertEqual(40, len(reviewed.comments))
         self.assertEqual(36, result["source_comments"])
-        self.assertEqual(4, result["appendix_comments"])
+        self.assertEqual(4, result["context_comments"])
         self.assertEqual([paragraph.text for paragraph in document.paragraphs],
-                         [paragraph.text for paragraph in reviewed.paragraphs[:36]])
-        headings = [paragraph for paragraph in reviewed.paragraphs[36:]
-                    if any(run.font.highlight_color == WD_COLOR_INDEX.YELLOW for run in paragraph.runs)]
-        self.assertEqual(["مورد 4 | MISSING | B", "مورد 20 | HEADER | A",
-                          "مورد 39 | AMBIGUOUS | C", "مورد 40 | PROTECTED | A"],
-                         [paragraph.text for paragraph in headings])
-        titles = [paragraph for paragraph in reviewed.paragraphs if paragraph.text == APPENDIX_TITLE]
-        self.assertEqual(1, len(titles))
-        self.assertTrue(titles[0].paragraph_format.page_break_before)
-        self.assertEqual("Normal", titles[0].style.name)
+                         [paragraph.text for paragraph in reviewed.paragraphs])
+        context_comments = list(reviewed.comments)[-4:]
+        for prefix, comment in zip(("مورد 4 | MISSING | B", "مورد 20 | HEADER | A",
+                                    "مورد 39 | AMBIGUOUS | C", "مورد 40 | PROTECTED | A"), context_comments):
+            self.assertTrue(comment.text.startswith(prefix))
+            self.assertIn("عبارت زردشده", comment.text.splitlines()[0])
+            self.assertIn("نیست", comment.text.splitlines()[0])
+        self.assertEqual(["document", "story", "paragraph", "paragraph"],
+                         [record["scope"] for record in result["context_records"]])
+        self.assertEqual([0, 0, 0, 1], [record["anchor_par_index"] for record in result["context_records"]])
+        self.assertIn("در سطح سند", context_comments[0].text)
+        self.assertIn("ارجاع به سرصفحه", context_comments[1].text)
         self.assertIn("فقط بررسی دستی", list(reviewed.comments)[-2].text)
         self.assertIn("مورد 40", list(reviewed.comments)[-1].text)
-        self.assertTrue(any("7 نامزد مبهم" in paragraph.text and "جزو 40 یافته" in paragraph.text
-                            for paragraph in reviewed.paragraphs))
+        self.assertNotIn("7 نامزد مبهم", "\n".join(paragraph.text for paragraph in reviewed.paragraphs))
 
     def test_all_comments_in_original_needs_no_appendix_and_no_rewrite(self):
         document = Document()
@@ -124,19 +126,21 @@ class UnifiedWordReviewTests(unittest.TestCase):
             self.assertEqual(section, etree.tostring(final_document.find(".//" + qn("w:sectPr")), method="c14n"))
             self.assertEqual(opaque, package.read("customXml/opaque.bin"))
             self.assertEqual(qn("w:sectPr"), list(final_document.find(qn("w:body")))[-1].tag)
-        self.assertEqual(1, result["appendix_comments"])
+        self.assertEqual(1, result["context_comments"])
 
-    def test_zero_source_comment_cap_places_every_finding_in_same_appendix(self):
+    def test_zero_source_comment_cap_keeps_every_comment_on_existing_text(self):
         document = Document()
         document.add_paragraph("alpha beta")
         issues = [finding("FIRST", 0, "alpha"), finding("SECOND", 0, "beta")]
         stats = self.prepare(document, issues, limit=0)
         reviewed, result = self.finalize(issues, stats)
         self.assertEqual(0, result["source_comments"])
-        self.assertEqual(2, result["appendix_comments"])
+        self.assertEqual(2, result["context_comments"])
         self.assertEqual(2, len(reviewed.comments))
         self.assertEqual("alpha beta", reviewed.paragraphs[0].text)
-        self.assertTrue(all(run.font.highlight_color is None for run in reviewed.paragraphs[0].runs))
+        self.assertEqual(1, len(reviewed.paragraphs))
+        self.assertTrue(any(run.font.highlight_color == WD_COLOR_INDEX.YELLOW for run in reviewed.paragraphs[0].runs))
+        self.assertTrue(all("ارجاع در سطح پاراگراف" in comment.text for comment in reviewed.comments))
 
     def test_no_findings_keeps_byte_identical_review(self):
         document = Document()
@@ -195,20 +199,21 @@ class UnifiedWordReviewTests(unittest.TestCase):
         self.assertEqual(original, self.source.read_bytes())
         self.assertEqual(review, self.review.read_bytes())
 
-    def test_appendix_formatting_uses_word_schema_order_without_heading_style(self):
+    def test_context_highlight_keeps_word_schema_order_without_body_format_changes(self):
         document = Document()
-        document.add_paragraph("متن اصلی")
+        paragraph = document.add_paragraph("متن اصلی")
+        paragraph.runs[0].bold = True
+        paragraph.runs[0]._r.get_or_add_rPr().append(etree.Element(qn("w:rtl")))
         issues = [finding("MISSING", confidence="B")]
         stats = self.prepare(document, issues)
         reviewed, _ = self.finalize(issues, stats)
-        title = next(paragraph for paragraph in reviewed.paragraphs if paragraph.text == APPENDIX_TITLE)
-        self.assertEqual([qn("w:keepNext"), qn("w:pageBreakBefore"), qn("w:bidi")],
-                         [child.tag for child in title._p.find(qn("w:pPr"))])
-        entry = next(paragraph for paragraph in reviewed.paragraphs if paragraph.text.startswith("مورد 1 |"))
-        self.assertEqual([qn("w:rFonts"), qn("w:b"), qn("w:bCs"), qn("w:sz"),
-                          qn("w:szCs"), qn("w:highlight"), qn("w:rtl")],
-                         [child.tag for child in entry.runs[0]._r.find(qn("w:rPr"))])
-        self.assertIsNone(title._p.find(".//" + qn("w:pStyle")))
+        self.assertEqual(["متن اصلی"], [paragraph.text for paragraph in reviewed.paragraphs])
+        self.assertIsNone(reviewed.paragraphs[0]._p.find(qn("w:pPr")))
+        self.assertEqual([qn("w:b"), qn("w:highlight"), qn("w:rtl")],
+                         [child.tag for child in reviewed.paragraphs[0].runs[0]._r.find(qn("w:rPr"))])
+        properties = list(reviewed.comments)[0].paragraphs[0].runs[0]._r.find(qn("w:rPr"))
+        self.assertEqual([qn("w:rFonts"), qn("w:sz"), qn("w:szCs"), qn("w:rtl")],
+                         [child.tag for child in properties])
 
     def test_lost_source_yellow_witness_cannot_be_reported_as_complete(self):
         document = Document()
@@ -227,6 +232,58 @@ class UnifiedWordReviewTests(unittest.TestCase):
         with self.assertRaisesRegex(DocumentIntegrityError, "yellow witness"):
             finalize_word_review(self.source, self.review, issues, stats)
         self.assertEqual(before, self.review.read_bytes())
+
+    def test_empty_source_cannot_receive_a_fabricated_body_anchor(self):
+        document = Document()
+        document.add_paragraph("")
+        issues = [finding("MISSING", confidence="B")]
+        stats = self.prepare(document, issues)
+        original, reviewed = self.source.read_bytes(), self.review.read_bytes()
+        with self.assertRaises(WordReviewReportError):
+            finalize_word_review(self.source, self.review, issues, stats)
+        self.assertEqual(original, self.source.read_bytes())
+        self.assertEqual(reviewed, self.review.read_bytes())
+
+    def test_unsafe_only_source_does_not_insert_text_to_create_an_anchor(self):
+        document = Document()
+        paragraph = document.add_paragraph("متن دارای فیلد")
+        field = etree.SubElement(paragraph._p, qn("w:fldSimple"), {qn("w:instr"): " PAGE "})
+        etree.SubElement(etree.SubElement(field, qn("w:r")), qn("w:t")).text = "1"
+        issues = [finding("MISSING", confidence="B")]
+        stats = self.prepare(document, issues)
+        original, reviewed = self.source.read_bytes(), self.review.read_bytes()
+        with self.assertRaises(WordReviewReportError):
+            finalize_word_review(self.source, self.review, issues, stats)
+        self.assertEqual(original, self.source.read_bytes())
+        self.assertEqual(reviewed, self.review.read_bytes())
+
+    def test_existing_table_cell_can_host_context_without_new_paragraphs(self):
+        document = Document()
+        table = document.add_table(rows=1, cols=1)
+        table.cell(0, 0).text = "متن موجود در جدول"
+        issues = [finding("MISSING", confidence="B")]
+        stats = self.prepare(document, issues)
+        reviewed, result = self.finalize(issues, stats)
+        self.assertEqual([], reviewed.paragraphs)
+        self.assertEqual("متن موجود در جدول", reviewed.tables[0].cell(0, 0).text)
+        self.assertEqual(1, len(reviewed.tables[0].cell(0, 0).paragraphs))
+        self.assertEqual(-1, result["context_records"][0]["anchor_par_index"])
+        self.assertIn("/w:tbl/", result["context_records"][0]["anchor_xml_path"])
+        self.assertIn("در سطح سند", list(reviewed.comments)[0].text)
+
+    def test_unique_related_heading_is_navigation_context_without_new_text(self):
+        document = Document()
+        document.add_paragraph("پاراگراف آغازین")
+        document.add_paragraph("منابع", style="Heading 1")
+        issues = [finding("MISSING", confidence="B", loc="ساختار بخش منابع")]
+        stats = self.prepare(document, issues)
+        reviewed, result = self.finalize(issues, stats)
+        self.assertEqual([paragraph.text for paragraph in document.paragraphs],
+                         [paragraph.text for paragraph in reviewed.paragraphs])
+        self.assertEqual(1, result["context_records"][0]["anchor_par_index"])
+        self.assertIn("در سطح سند", list(reviewed.comments)[0].text)
+        self.assertTrue(any(run.font.highlight_color == WD_COLOR_INDEX.YELLOW
+                            for run in reviewed.paragraphs[1].runs))
 
 
 if __name__ == "__main__":

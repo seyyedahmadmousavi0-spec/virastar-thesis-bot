@@ -98,7 +98,7 @@ const query=input(),level=input(),print=input(),count={},empty={};level.value='d
 const cards=[{dataset:{confidence:'A'},textContent:'alpha target'}, {dataset:{confidence:'B'},textContent:'beta review'}, {dataset:{confidence:'C'},textContent:'gamma ambiguous'}];
 const elements={query,level,print,count,empty};let prints=0;
 const document={getElementById:id=>elements[id],querySelectorAll:()=>cards};
-vm.runInNewContext(SOURCE,{document,window:{print(){prints++;}}});
+vm.runInNewContext(SOURCE,{document,window:{print(){prints++;}}},{timeout:5000});
 assert.equal(cards[0].hidden,false);assert.equal(cards[1].hidden,false);assert.equal(cards[2].hidden,true);
 query.value='target';query.handlers.input();assert.equal(cards.filter(c=>!c.hidden).length,1);
 query.value='';level.value='C';level.handlers.change();assert.equal(cards[2].hidden,false);assert.equal(cards[0].hidden,true);
@@ -106,5 +106,7 @@ level.value='all';level.handlers.change();assert.equal(cards.filter(c=>!c.hidden
 query.value='not-present';query.handlers.input();assert.equal(empty.hidden,false);
 print.handlers.click();assert.equal(prints,1);
 '''.replace("SOURCE", json.dumps(script))
-        result = subprocess.run([node, "-e", harness], capture_output=True, text=True, timeout=10)
+        # Allow shared Windows runners time to start Node; execution of the
+        # actual report script remains bounded separately by the VM timeout.
+        result = subprocess.run([node, "-e", harness], capture_output=True, text=True, timeout=30)
         self.assertEqual(0, result.returncode, result.stderr)

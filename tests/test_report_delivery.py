@@ -100,7 +100,7 @@ class DeliveryTests(unittest.TestCase):
         from checker import analyze
         _, findings, _ = analyze(source)
         self.assertEqual(len(findings), len(full_review.comments))
-        self.assertIn("یافته‌های تکمیلی بازبینی", "\n".join(p.text for p in result.paragraphs))
+        self.assertEqual([p.text for p in doc.paragraphs], [p.text for p in result.paragraphs])
         self.assertIn("کامنت", self.messages[-1])
         self.assertLess(len(self.messages[-1]), 800)
         self.assertIn("/report", self.messages[-1])
@@ -190,6 +190,7 @@ class CliDeliveryTests(unittest.TestCase):
             self.assertGreater(report["stats"]["annotation_summary"]["unapplied"], 0)
             self.assertEqual(len(report["findings"]), len(Document(reviewed).comments))
             self.assertTrue(report["stats"]["unified_word_review"]["output_created"])
+            self.assertEqual([p.text for p in doc.paragraphs], [p.text for p in Document(reviewed).paragraphs])
 
 
 if __name__ == "__main__":

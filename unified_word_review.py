@@ -1,9 +1,8 @@
-"""Complete a reviewed source Word with clearly identified review-only entries.
+"""Put every finding in comments on existing text in one reviewed source Word.
 
-Source anchors remain where the conservative annotator certified them. Findings
-that cannot safely be attached there receive an independent yellow heading and
-comment in an explicitly labelled appendix in the *same* Word package. Only main
-document XML and comment wiring are changed; unrelated package parts stay bytes.
+Certified exact/paragraph anchors are retained. Findings without a safe exact
+location receive explicitly qualified contextual comments on existing source
+paragraphs. No body text, paragraph, heading or appendix is ever added.
 """
 from collections import Counter
 import copy
@@ -22,10 +21,10 @@ from doc_guard import (DocumentIntegrityError, atomic_write,
                        ensure_distinct_output, reject_unsafe_xml, sha256_file)
 from word_review_report import (MAX_REVIEW_BYTES, MAX_REVIEW_CHARACTERS,
                                 MAX_REVIEW_FINDINGS, WordReviewReportError,
-                                _issue_lines, _short_comment, _xml_text)
+                                _xml_text)
+from report_artifacts import ANNOTATION_REASONS, CONFIDENCE_LABELS, STORY_LABELS, location_label
 
 
-APPENDIX_TITLE = "یافته‌های تکمیلی بازبینی"
 _REL_NS = "http://schemas.openxmlformats.org/package/2006/relationships"
 _CT_NS = "http://schemas.openxmlformats.org/package/2006/content-types"
 _COMMENTS_REL = "http://schemas.openxmlformats.org/officeDocument/2006/relationships/comments"
@@ -131,24 +130,15 @@ def _payload_digest(document):
     return text_digest.digest(), structure_digest.digest()
 
 
-def _paragraph(text, *, yellow=False, bold=False, page_break=False):
+def _comment_paragraph(text):
     paragraph = etree.Element(qn("w:p"))
     properties = etree.SubElement(paragraph, qn("w:pPr"))
-    if bold:
-        etree.SubElement(properties, qn("w:keepNext"))
-    if page_break:
-        etree.SubElement(properties, qn("w:pageBreakBefore"))
     etree.SubElement(properties, qn("w:bidi"))
     run = etree.SubElement(paragraph, qn("w:r"))
     formatting = etree.SubElement(run, qn("w:rPr"))
     etree.SubElement(formatting, qn("w:rFonts"), {qn("w:ascii"): "Arial", qn("w:hAnsi"): "Arial", qn("w:cs"): "Arial"})
-    if bold:
-        etree.SubElement(formatting, qn("w:b"))
-        etree.SubElement(formatting, qn("w:bCs"))
     etree.SubElement(formatting, qn("w:sz"), {qn("w:val"): "22"})
     etree.SubElement(formatting, qn("w:szCs"), {qn("w:val"): "22"})
-    if yellow:
-        etree.SubElement(formatting, qn("w:highlight"), {qn("w:val"): "yellow"})
     etree.SubElement(formatting, qn("w:rtl"))
     for index, line in enumerate(_xml_text(text).split("\n")):
         if index:
@@ -159,11 +149,169 @@ def _paragraph(text, *, yellow=False, bold=False, page_break=False):
     return paragraph
 
 
-def _add_comment_anchor(paragraph, identity):
-    paragraph.insert(1, etree.Element(qn("w:commentRangeStart"), {qn("w:id"): identity}))
-    paragraph.append(etree.Element(qn("w:commentRangeEnd"), {qn("w:id"): identity}))
-    reference = etree.SubElement(paragraph, qn("w:r"))
+def _add_comment_anchor(first_run, last_run, identity):
+    first_run.addprevious(etree.Element(qn("w:commentRangeStart"), {qn("w:id"): identity}))
+    end = etree.Element(qn("w:commentRangeEnd"), {qn("w:id"): identity})
+    last_run.addnext(end)
+    reference = etree.Element(qn("w:r"))
     etree.SubElement(reference, qn("w:commentReference"), {qn("w:id"): identity})
+    end.addnext(reference)
+
+
+def _safe_runs(paragraph):
+    allowed = {qn("w:pPr"), qn("w:r"), qn("w:commentRangeStart"),
+               qn("w:commentRangeEnd"), qn("w:bookmarkStart"), qn("w:bookmarkEnd")}
+    if any(child.tag not in allowed for child in paragraph):
+        return None
+    runs = []
+    for run in paragraph.findall(qn("w:r")):
+        text = []
+        for child in run:
+            if child.tag in {qn("w:rPr"), qn("w:commentReference")}:
+                continue
+            if child.tag == qn("w:t"):
+                text.append(child.text or "")
+            elif child.tag in {qn("w:tab"), qn("w:cr")}:
+                text.append("\t" if child.tag == qn("w:tab") else "\n")
+            elif child.tag == qn("w:br") and child.get(qn("w:type"), "textWrapping") == "textWrapping":
+                text.append("\n")
+            else:
+                return None
+        if "".join(text):
+            runs.append((run, "".join(text)))
+    return runs if "".join(text for _, text in runs).strip() else None
+
+
+def _highlight_runs(runs):
+    # Insert highlight in the WordprocessingML rPr schema order. Existing
+    # scientific text and all other run properties stay intact.
+    following = {qn("w:" + name) for name in (
+        "u", "effect", "bdr", "shd", "fitText", "vertAlign", "rtl", "cs",
+        "em", "lang", "eastAsianLayout", "specVanish", "oMath", "rPrChange")}
+    for run, _ in runs:
+        properties = run.find(qn("w:rPr"))
+        if properties is None:
+            properties = etree.Element(qn("w:rPr"))
+            run.insert(0, properties)
+        highlight = properties.find(qn("w:highlight"))
+        if highlight is None:
+            highlight = etree.Element(qn("w:highlight"))
+            successor = next((child for child in properties if child.tag in following), None)
+            if successor is None:
+                properties.append(highlight)
+            else:
+                successor.addprevious(highlight)
+        highlight.set(qn("w:val"), "yellow")
+
+
+def _context_candidates(document):
+    body = document.find(qn("w:body"))
+    body_indexes = {paragraph: index for index, paragraph in enumerate(body.findall(qn("w:p")))}
+    candidates = []
+    excluded = {qn("w:" + tag) for tag in ("txbxContent", "del", "ins", "moveFrom", "moveTo", "sdt")}
+    for paragraph in body.iter(qn("w:p")):
+        if any(ancestor.tag in excluded for ancestor in paragraph.iterancestors()):
+            continue
+        runs = _safe_runs(paragraph)
+        if runs:
+            candidates.append({"paragraph": paragraph, "runs": runs,
+                               "text": "".join(text for _, text in runs),
+                               "index": body_indexes.get(paragraph, -1),
+                               "path": document.getroottree().getpath(paragraph)})
+    return candidates
+
+
+def _resolve_context(issue, candidates, document, by_path, by_index, by_element, heading_candidates):
+    unsupported = issue.story not in {"", "body", "table"} or issue.source_part.lstrip("/") not in {"", "word/document.xml"}
+    if not unsupported:
+        if issue.xml_path:
+            candidate = by_path.get(issue.xml_path)
+            if candidate is not None:
+                return candidate, "paragraph"
+            try:
+                found = document.xpath(issue.xml_path, namespaces={key: value for key, value in document.nsmap.items() if key})
+            except etree.XPathError:
+                found = []
+            if len(found) == 1:
+                candidate = by_element.get(found[0])
+                if candidate is not None:
+                    return candidate, "paragraph"
+        elif issue.par_index >= 0:
+            candidate = by_index.get(issue.par_index)
+            if candidate is not None:
+                return candidate, "paragraph"
+    # A related heading is a navigation aid only. Its text must match the
+    # reported location unambiguously; never guess a semantic source phrase.
+    location = " ".join(str(issue.loc or "").casefold().split())
+    headings = []
+    for title, item in heading_candidates:
+        if title in location:
+            headings.append(item)
+    candidate = headings[0] if len(headings) == 1 else candidates[0]
+    return candidate, "story" if unsupported else "document"
+
+
+def _context_text(issue, index, scope, reason):
+    story_label = STORY_LABELS.get(issue.story, "بخش گزارش‌شدهٔ سند")
+    if scope == "story":
+        qualifier = f"ارجاع به {story_label}؛ عبارت زردشده محل دقیق ایراد نیست"
+    elif scope == "paragraph":
+        qualifier = "ارجاع در سطح پاراگراف؛ عبارت زردشده لزوماً خطا نیست"
+    else:
+        qualifier = "در سطح سند؛ عبارت زردشده لزوماً خطا نیست"
+    lines = [f"مورد {index + 1} | {issue.rule_id} | {issue.confidence} — {CONFIDENCE_LABELS[issue.confidence]} [{qualifier}]",
+             "محل گزارش‌شده: " + location_label(issue.loc),
+             "علت کامنت ارجاعی: " + ANNOTATION_REASONS.get(reason, "محل دقیق برای درج کامنت تأیید نشد") + ".",
+             "دلیل: " + str(issue.message or "این مورد را با متن اصلی بررسی کنید."),
+             "پیشنهاد: " + str(issue.suggestion or "پیش از هر تغییر، متن اصلی و بافت پژوهش را دستی بررسی کنید.")]
+    if issue.confidence == "C":
+        lines.append("فقط بررسی دستی؛ این مورد خطای قطعی محسوب نمی‌شود.")
+    if issue.protected_overlap:
+        lines.append("محتوای علمی حفاظت‌شده است؛ اعداد، فرمول‌ها و متن علمی اصلاح خودکار نشده‌اند.")
+    if issue.location_status == "exact" and issue.target_text:
+        lines.append("شاهد گزارش‌شده از محل اصلی: «" + issue.target_text + "»")
+    elif issue.snippet:
+        lines.append("متن پیرامونی ثبت‌شده؛ محل دقیق تأیید نشده: «" + issue.snippet + "»")
+    return _xml_text("\n".join(lines))
+
+
+def _add_context_comments(document, comments, remaining, findings, records, next_id):
+    candidates = _context_candidates(document)
+    if not candidates:
+        raise WordReviewReportError("متن موجود و ایمنی برای اتصال کامنت پیدا نشد؛ فایل ناقص منتشر نشد.")
+    by_path = {item["path"]: item for item in candidates}
+    by_index = {item["index"]: item for item in candidates if item["index"] >= 0}
+    by_element = {item["paragraph"]: item for item in candidates}
+    heading_candidates = []
+    for item in candidates:
+        style = item["paragraph"].find("./" + qn("w:pPr") + "/" + qn("w:pStyle"))
+        style_name = (style.get(qn("w:val"), "") if style is not None else "").casefold()
+        title = " ".join(item["text"].casefold().split())
+        if style_name.startswith(("heading", "title", "عنوان")) and 3 <= len(title) <= 200:
+            heading_candidates.append((title, item))
+    new_ids, context_records, highlighted = set(), [], set()
+    characters = 0
+    for index in remaining:
+        issue = findings[index]
+        anchor, scope = _resolve_context(issue, candidates, document, by_path, by_index, by_element, heading_candidates)
+        text = _context_text(issue, index, scope, records[index].get("reason", ""))
+        characters += len(text)
+        if characters > MAX_REVIEW_CHARACTERS:
+            raise WordReviewReportError("حجم کامنت‌ها از ظرفیت Word کامل بیشتر است؛ فایل ناقص منتشر نشد.")
+        identity = str(next_id)
+        next_id += 1
+        new_ids.add(identity)
+        if anchor["path"] not in highlighted:
+            _highlight_runs(anchor["runs"])
+            highlighted.add(anchor["path"])
+        _add_comment_anchor(anchor["runs"][0][0], anchor["runs"][-1][0], identity)
+        comment = etree.SubElement(comments, qn("w:comment"),
+                                   {qn("w:id"): identity, qn("w:author"): "ویراستار پژوهش", qn("w:initials"): "VP"})
+        comment.append(_comment_paragraph(text))
+        context_records.append({"index": index, "anchor_par_index": anchor["index"],
+                                "anchor_xml_path": anchor["path"], "scope": scope,
+                                "source_story": issue.story, "reason": records[index].get("reason", "")})
+    return new_ids, context_records
 
 
 def _validate_new_anchors(document, identities):
@@ -218,7 +366,7 @@ def _validated_records(issues, stats):
 
 
 def finalize_word_review(source_path, annotated_path, issues, stats, rules=None):
-    """Atomically put every returned finding into one reviewed source Word.
+    """Atomically comment every finding on existing source Word text only.
 
     ``annotated_path`` must be the conservative annotated copy with the matching
     ``stats['annotation_summary']``. It is replaced only after all findings have
@@ -245,8 +393,9 @@ def finalize_word_review(source_path, annotated_path, issues, stats, rules=None)
             body = document.find(qn("w:body"))
             if body is None:
                 raise DocumentIntegrityError("Reviewed Word has no document body")
-            original_children = [_canonical(node) for node in body]
             original_count = len(body)
+            paragraph_nodes = len(list(document.iter(qn("w:p"))))
+            text_nodes = len(list(document.iter(qn("w:t"))))
             relationships, comments_name, comments = _comments_part(reviewed)
             _, _, source_comments = _comments_part(source)
             original_comments = _comment_map(comments)
@@ -263,8 +412,8 @@ def finalize_word_review(source_path, annotated_path, issues, stats, rules=None)
                 if sha256_file(source_path) != initial_hash or sha256_file(annotated_path) != reviewed_hash:
                     raise DocumentIntegrityError("Word changed during finalization")
                 return {"output_created": True, "requested": len(findings), "source_comments": applied,
-                        "appendix_comments": 0, "comments": applied, "highlighted": applied,
-                        "exact_comments": exact, "paragraph_comments": paragraph_count}
+                        "context_comments": 0, "appendix_comments": 0, "comments": applied, "highlighted": applied,
+                        "exact_comments": exact, "paragraph_comments": paragraph_count, "context_records": []}
 
             comment_snapshots = {identity: _canonical(node) for identity, node in original_comments.items()}
             known_ids = set(original_comments)
@@ -276,43 +425,14 @@ def finalize_word_review(source_path, annotated_path, issues, stats, rules=None)
                             raise DocumentIntegrityError("Invalid existing Word anchor ID")
                         known_ids.add(identity)
             next_id = max((int(identity) for identity in known_ids), default=-1) + 1
-            insertion = original_count
-            if len(body) and body[-1].tag == qn("w:sectPr"):
-                insertion -= 1
-            appendix = [_paragraph(APPENDIX_TITLE, bold=True, page_break=True),
-                        _paragraph("این بخش را ربات برای بازبینی افزوده است و جزو متن پایان‌نامه نیست؛ پیشنهادها اعمال نشده‌اند."),
-                        _paragraph(f"همهٔ {len(findings)} یافته در همین فایل کامنت و هایلایت زرد دارند: {applied} مورد در متن سند و {len(remaining)} مورد در این بخش. "
-                                   "عنوان زرد این بخش، محل دقیق ایراد در متن اصلی نیست؛ مکان ثبت‌شده و دلیل هر مورد را بررسی کنید."),
-                        _paragraph("موارد C فقط برای بررسی دستی‌اند. برای نبودن یک بخش، محل نامطمئن یا محتوای حفاظت‌شده، عبارت ساختگی در متن علمی علامت‌گذاری نشده است.")]
-            suppressed = stats.get("ambiguous_candidates", 0)
-            if isinstance(suppressed, int) and not isinstance(suppressed, bool) and suppressed > 0:
-                appendix.append(_paragraph(
-                    f"{suppressed} نامزد مبهم در حالت سخت‌گیرانه کنار گذاشته شده و جزئیات آن در خروجی تحلیل موجود نیست؛ "
-                    f"این تعداد جزو {len(findings)} یافتهٔ دارای کامنت در همین فایل یا موارد C گزارش‌شده محسوب نمی‌شود."))
-            appended_ids = set()
-            characters = sum(len("".join(node.itertext())) for node in appendix)
-            for index in remaining:
-                issue = findings[index]
-                title = f"مورد {index + 1} | {issue.rule_id} | {issue.confidence}"
-                lines = _issue_lines(issue, index, stats, records)
-                comment_text = _short_comment(issue, index)
-                if issue.confidence == "C":
-                    comment_text = "[فقط بررسی دستی] " + comment_text
-                characters += sum(len(_xml_text(value)) for value in (title, comment_text, *lines))
-                if characters > MAX_REVIEW_CHARACTERS:
-                    raise WordReviewReportError("حجم یافته‌ها از ظرفیت Word کامل بیشتر است؛ فایل ناقص منتشر نشد.")
-                identity = str(next_id)
-                next_id += 1
-                appended_ids.add(identity)
-                heading = _paragraph(title, yellow=True, bold=True)
-                _add_comment_anchor(heading, identity)
-                appendix.append(heading)
-                appendix.extend(_paragraph(line) for line in lines)
-                comment = etree.SubElement(comments, qn("w:comment"),
-                                           {qn("w:id"): identity, qn("w:author"): "ویراستار پژوهش", qn("w:initials"): "VP"})
-                comment.append(_paragraph(comment_text))
-            for index, node in enumerate(appendix, insertion):
-                body.insert(index, node)
+            del node
+            context_ids, context_records = _add_context_comments(
+                document, comments, remaining, findings, records, next_id)
+            if (_payload_digest(document) != source_payload
+                    or len(body) != original_count
+                    or len(list(document.iter(qn("w:p")))) != paragraph_nodes
+                    or len(list(document.iter(qn("w:t")))) != text_nodes):
+                raise DocumentIntegrityError("Context comments changed source text or paragraphs")
 
             replacements = {"word/document.xml": _serialize(document)}
             if comments_name is None:
@@ -346,12 +466,11 @@ def finalize_word_review(source_path, annotated_path, issues, stats, rules=None)
                 raise WordReviewReportError("حجم فایل از ظرفیت Word کامل بیشتر است؛ فایل ناقص منتشر نشد.")
             original_comment_ids = set(original_comments)
             old_comment_count = len(old_comments)
-            appendix_count = len(appendix)
             had_original_comments = bool(original_comments)
             # Child nodes keep their entire owning XML tree alive. Release all
             # of them before reopening the saved package on the free host.
             del document, body, comments, source_comments, original_comments, old_comments
-            del appendix, heading, comment, node, buffer
+            del buffer
             gc.collect()
             # Reopen the actual completed ZIP, rather than trusting the in-memory
             # construction. Original paragraphs/section settings and opaque parts
@@ -359,17 +478,18 @@ def finalize_word_review(source_path, annotated_path, issues, stats, rules=None)
             with zipfile.ZipFile(io.BytesIO(payload)) as reopened:
                 final_document = _tree(reopened.read("word/document.xml"))
                 final_body = final_document.find(qn("w:body"))
-                expected_original = [*list(final_body)[:insertion], *list(final_body)[insertion + appendix_count:]]
-                if (len(expected_original) != original_count
-                        or [_canonical(node) for node in expected_original] != original_children):
-                    raise DocumentIntegrityError("Review appendix changed source document XML")
+                if (_payload_digest(final_document) != source_payload
+                        or len(final_body) != original_count
+                        or len(list(final_document.iter(qn("w:p")))) != paragraph_nodes
+                        or len(list(final_document.iter(qn("w:t")))) != text_nodes):
+                    raise DocumentIntegrityError("Context comments changed source document payload")
                 final_comments = _comment_map(_tree(reopened.read(comments_name)))
-                if (set(final_comments) != original_comment_ids | appended_ids
+                if (set(final_comments) != original_comment_ids | context_ids
                         or len(final_comments) != old_comment_count + len(findings)
                         or any(_canonical(final_comments[identity]) != snapshot
                                for identity, snapshot in comment_snapshots.items())):
                     raise DocumentIntegrityError("Unified Word lost or changed comments")
-                _validate_new_anchors(final_document, source_new_ids | appended_ids)
+                _validate_new_anchors(final_document, source_new_ids | context_ids)
                 changed = {"word/document.xml", comments_name}
                 if "word/_rels/document.xml.rels" not in reviewed.namelist() or not had_original_comments:
                     # Creation of comments wiring is the only other permitted
@@ -386,8 +506,10 @@ def finalize_word_review(source_path, annotated_path, issues, stats, rules=None)
             reviewed.close()
             atomic_write(annotated_path, payload, source_path=source_path)
             return {"output_created": True, "requested": len(findings), "source_comments": applied,
-                    "appendix_comments": len(remaining), "comments": len(findings), "highlighted": len(findings),
-                    "exact_comments": exact, "paragraph_comments": paragraph_count}
+                    "context_comments": len(remaining), "appendix_comments": 0,
+                    "comments": len(findings), "highlighted": len(findings),
+                    "exact_comments": exact, "paragraph_comments": paragraph_count,
+                    "context_records": context_records}
     finally:
         if sha256_file(source_path) != initial_hash:
             raise DocumentIntegrityError("Source changed during Word finalization")
