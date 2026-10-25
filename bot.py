@@ -2,7 +2,7 @@
 """
 بازوی بله «ویراستار پژوهش» برای ارزیابی، ویرایش علمی و بررسی پایان‌نامه و مقاله.
 پشتیبانی از فایل‌های Word (.docx)، فایل‌های PDF و متون مستقیم ارسالی در چت.
-مجهز به پروفایل تخصصی دانشگاه علوم پزشکی تهران (TUMS) و بررسی متون انگلیسی.
+مجهز به پروفایل دانشگاه کاشان و بررسی متون انگلیسی.
 """
 import gc
 import logging
@@ -83,7 +83,7 @@ _bot_status = {
     "last_reply": None
 }
 
-modes = {}        # chat_id -> "tums" | "thesis" | "article" | "english"
+modes = {}        # chat_id -> "thesis" | "article" | "english" | Kashan modes
 document_scopes = {}  # Explicit full-document / fragment scope for Kashan reviews.
 jobs = JobGate(WORKERS + MAX_QUEUE, COOLDOWN)
 busy, last_job, lock = jobs.busy, jobs.last_started, jobs.lock
@@ -96,60 +96,71 @@ reports = ReportStore(ttl_seconds=REPORT_TTL_MINUTES * 60,
 # Build complete review Word files one at a time on a free host.
 _word_review_lock = threading.Lock()
 
+CREDIT = "👤 سازنده: سیداحمد موسوی — دانشگاه کاشان"
+
 WELCOME = (
-    "سلام 👋\n"
-    "به سامانه بازوی «ویراستار پژوهش» خوش آمدید.\n\n"
-    "این سامانه برای بازبینی قاعده‌محور پایان‌نامه‌ها، رساله‌ها و مقالات طراحی شده است. یافته‌ها پیشنهاد بازبینی‌اند و صحت علمی یا نبود خطا را تضمین نمی‌کنند:\n"
-    "• املای دقیق و تایپوگرافی فارسی (نیم‌فاصله، ی/ک، ارقام، پیشوندها و پسوندها)\n"
-    "• سبک و لحن علمی (حذف عبارات مبالغه‌آمیز، محاوره‌ای و ادعاهای قطعی بدون شاهد)\n"
-    "• دستور زبان و ساختار متون فارسی و انگلیسی (Grammar, Articles, Prepositions)\n"
-    "• بررسی برخی نشانه‌های ساختاری و بخش‌های سند\n"
-    "• ارجاع‌دهی درون‌متنی و تطبیق با فهرست منابع (ونکوور، هاروارد و APA)\n"
-    "• صفحه‌آرایی فایل Word (حاشیه‌ها، فونت‌ها، تراز و شماره‌گذاری)\n"
-    "• دریافت کپی Word با هایلایت و کامنت‌های کوتاه؛ پیشنهادها خودکار اعمال نمی‌شوند\n\n"
-    "📌 انتخاب نوع سند:\n"
-    "🎓 /thesis : پایان‌نامه و رساله دانشگاهی (پیش‌فرض)\n"
-    "🏛 /tums : بررسی با پروفایل دانشگاه علوم پزشکی تهران\n"
-    "🏛 /kashan : دانشگاه کاشان؛ انتخاب ارشد یا دکتری\n"
-    "📑 /article : مقاله پژوهشی / علمی\n"
-    "🇬🇧 /english : بررسی متون و مقالات انگلیسی\n"
-    "ℹ️ /status : مشاهده وضعیت جاری\n"
-    "📖 /help : راهنمای کامل\n\n"
-    "📎 فایل Word (.docx) یا PDF بفرستید یا متن را در چت بنویسید.\n"
-    "📋 /report گزارش کامل آخرین بررسی شما را می‌فرستد؛ /comments راهنمای کامنت‌هاست."
+    "سلام 👋 به «ویراستار پژوهش» خوش آمدید.\n\n"
+    "پایان‌نامه، مقاله یا متن خود را بفرستید تا ایرادهای املایی، نگارشی، سبک علمی، ساختار، "
+    "صفحه‌آرایی و ارجاع‌ها بررسی شود. یک نسخهٔ Word دریافت می‌کنید که هر ایراد در آن با "
+    "هایلایت زرد و کامنت روی همان متن مشخص شده است. فایل و متن شما تغییر نمی‌کند.\n\n"
+    "🔹 چطور کار می‌کند؟\n"
+    "۱. نوع سند را از دکمه‌های پایین انتخاب کنید (پیش‌فرض: پایان‌نامه).\n"
+    "۲. فایل Word (.docx)، PDF یا متن را بفرستید.\n"
+    "۳. نسخهٔ بازبینی را در Word باز کنید و کامنت‌ها را ببینید.\n\n"
+    "🎓 /thesis پایان‌نامه و رساله\n"
+    "🏛 /kashan دانشگاه کاشان (ارشد یا دکتری)\n"
+    "📑 /article مقالهٔ پژوهشی\n"
+    "🇬🇧 /english متن انگلیسی\n"
+    "📖 /help راهنما · ✍️ /feedback پیشنهاد و گزارش اشکال\n\n"
+    "یافته‌ها پیشنهاد بازبینی‌اند و جای نظر استاد راهنما و ویراستار را نمی‌گیرند.\n\n"
+    + CREDIT
 )
 
 HELP = (
-    "📖 راهنمای کار با ربات ویراستار پژوهش:\n\n"
-    "۱) انتخاب نوع سند:\n"
-    "• دستور /thesis برای پایان‌نامه‌ها و رساله‌ها (پیش‌فرض).\n"
-    "• دستور /tums برای پروفایل دانشگاه علوم پزشکی تهران؛ انطباق قطعی نیازمند بازبینی شیوه‌نامه است.\n"
-    "• دکمهٔ «دانشگاه کاشان» یا /kashan: انتخاب کارشناسی ارشد یا دکتری و سند کامل یا بخشی از آن.\n"
-    "  انتخاب مستقیم: /kashan_master و /kashan_phd؛ /kashan_info مرجع و محدودیت‌ها را نشان می‌دهد.\n"
-    "• دستور /article برای مقالات پژوهشی و علمی.\n"
-    "• دستور /english برای بازبینی قاعده‌محور متون انگلیسی.\n\n"
-    "۲) ارسال ورودی:\n"
-    "• فایل Word (.docx): یک کپی با هایلایت و کامنت‌های کوتاه دریافت می‌کنید؛ دستور /annotate لازم نیست. فایل ورودی و متن پایان‌نامه بازنویسی نمی‌شوند.\n"
-    "  همهٔ یافته‌ها روی متن موجودِ همین Word کامنت و زرد می‌شوند. موارد کلی با برچسب «در سطح سند» یا «زمینه‌ای» به یک عنوان یا پاراگراف موجود وصل می‌شوند.\n"
-    "• فایل PDF: خلاصه و گزارش صفحه‌دار؛ برای صفحات تصویری استخراج متن انجام نمی‌شود. نشانه‌گذاری PDF فقط در حالت آزمایشی میزبان و برای محل‌های قابل تطبیق انجام می‌شود.\n"
-    "• متن مستقیم: یک یا چند بند از متن خود را بفرستید تا فوراً بررسی گردد.\n\n"
-    "۳) /report گزارش HTML و TXT آخرین بررسی شما، /report html یا /report txt فقط یک قالب را می‌فرستد.\n"
-    f"گزارش تا {REPORT_TTL_MINUTES} دقیقه در حافظه می‌ماند؛ بررسی جدید جای قبلی را می‌گیرد و راه‌اندازی مجدد یا پرشدن ظرفیت ممکن است آن را زودتر پاک کند.\n"
-    "۴) /comments روش دیدن کامنت‌ها، /forget حذف گزارش و /settings تنظیمات را نشان می‌دهد.\n"
-    "🔒 فایل‌های موقت این پردازش پاک‌سازی می‌شوند؛ نگهداری داده در بله و میزبان تابع سیاست‌های آن‌هاست.\n"
-    "نتایج پیشنهاد بازبینی‌اند؛ بررسی علمی محتوا، صحت منابع و استخراج PDF کامل یا قطعی نیست."
+    "📖 راهنمای ویراستار پژوهش\n\n"
+    "۱) نوع سند\n"
+    "🎓 /thesis پایان‌نامه و رساله (پیش‌فرض)\n"
+    "🏛 /kashan دانشگاه کاشان؛ ابتدا مقطع (ارشد/دکتری)، سپس «سند کامل» یا «بخشی از سند» را انتخاب کنید.\n"
+    "    برای یک فصل یا چکیده «بخشی از سند» را بزنید تا نبود بخش‌های دیگر ایراد گرفته نشود. /kashan_info منبع قواعد.\n"
+    "📑 /article مقالهٔ پژوهشی · 🇬🇧 /english متن انگلیسی\n\n"
+    "۲) ارسال\n"
+    "• Word (.docx): نسخهٔ بازبینی با کامنت و زرد برمی‌گردد. همهٔ ایرادها داخل همین فایل‌اند؛ "
+    "ایرادهای کلی (مثل حاشیه یا بخش جاافتاده) روی نزدیک‌ترین متن مرتبط کامنت می‌شوند.\n"
+    "• PDF: گزارش صفحه‌به‌صفحه؛ صفحه‌های تصویری (اسکن‌شده) خوانده نمی‌شوند.\n"
+    "• متن: یک یا چند بند را مستقیم بفرستید.\n\n"
+    "۳) نتیجه\n"
+    "📋 /report گزارش کامل (HTML و متن) · 💬 /comments راهنمای دیدن کامنت‌ها\n"
+    f"گزارش تا {REPORT_TTL_MINUTES} دقیقه نگه داشته می‌شود؛ /forget آن را زودتر پاک می‌کند.\n\n"
+    "۴) کمک به بهترشدن ربات\n"
+    "✍️ /feedback اگر کامنتی اشتباه بود یا ایرادی دیده نشد، بنویسید؛ به سازنده می‌رسد.\n\n"
+    "🔒 /privacy حریم خصوصی · ⚙️ /settings وضعیت و محدودیت‌ها\n"
+    "نتایج پیشنهاد بازبینی‌اند؛ صحت علمی محتوا و منابع را تضمین نمی‌کنند.\n\n"
+    + CREDIT
 )
 
+FEEDBACK_BUTTON = "✍️ پیشنهاد و گزارش اشکال"
 MAIN_KEYBOARD = {
     "keyboard": [
-        [{"text": "🎓 پایان‌نامه"}, {"text": "📑 مقاله پژوهشی"}],
-        [{"text": "🏛 دانشگاه کاشان"}],
-        [{"text": "🇬🇧 متن انگلیسی"}, {"text": "ℹ️ وضعیت جاری"}],
+        [{"text": "🎓 پایان‌نامه"}, {"text": "🏛 دانشگاه کاشان"}],
+        [{"text": "📑 مقاله پژوهشی"}, {"text": "🇬🇧 متن انگلیسی"}],
         [{"text": "📋 گزارش کامل"}, {"text": "💬 راهنمای کامنت‌ها"}],
-        [{"text": "📖 راهنما"}, {"text": "🗑 حذف گزارش"}]
+        [{"text": "ℹ️ وضعیت جاری"}, {"text": "📖 راهنما"}],
+        [{"text": FEEDBACK_BUTTON}]
     ],
     "resize_keyboard": True
 }
+
+FEEDBACK_PROMPT = (
+    "✍️ پیام خود را در یک پیام بنویسید و بفرستید.\n"
+    "اگر کامنتی اشتباه بود، شناسهٔ قاعده (اول هر کامنت، مثل spelling) و واژهٔ مربوط را هم بنویسید؛ "
+    "اگر ایرادی دیده نشد، همان جمله را بفرستید.\n"
+    "پیام شما فقط برای بهبود ربات استفاده می‌شود. انصراف: /cancel"
+)
+FEEDBACK_MAX_CHARS = 2000
+FEEDBACK_PATH = os.environ.get("FEEDBACK_PATH", os.path.join(os.path.dirname(os.path.abspath(__file__)), "feedback.jsonl"))
+ADMIN_CHAT_ID = os.environ.get("ADMIN_CHAT_ID", "").strip()
+awaiting_feedback = set()   # chat ids whose next text message is feedback
+_feedback_lock = threading.Lock()
 
 KASHAN_MODE_TITLES = {
     "kashan": "دانشگاه کاشان؛ مقطع هنوز انتخاب نشده",
@@ -291,6 +302,23 @@ COMMENTS_HELP = (
 )
 
 
+def save_feedback(text, mode):
+    """Append feedback without user identifiers; optionally forward it to the owner."""
+    import json
+    record = {"time": time.strftime("%Y-%m-%d %H:%M:%S"), "mode": mode, "version": PRODUCT_VERSION,
+              "text": text[:FEEDBACK_MAX_CHARS]}
+    stored = False
+    try:
+        with _feedback_lock, open(FEEDBACK_PATH, "a", encoding="utf-8") as stream:
+            stream.write(json.dumps(record, ensure_ascii=False) + "\n")
+        stored = True
+    except OSError:
+        log.warning("Feedback could not be stored")
+    if ADMIN_CHAT_ID:
+        stored = send(ADMIN_CHAT_ID, f"✍️ بازخورد تازه (حالت: {mode})\n\n{record['text']}", reply_markup=None) or stored
+    return stored
+
+
 def _cache_reports(chat_id, sender_id, artifacts):
     return reports.put(chat_id, sender_id,
                        {kind: artifacts[kind].read_bytes() for kind in ("html", "txt")})
@@ -349,10 +377,11 @@ def process_document(chat_id, doc, annotate_requested=False, mode=None, sender_i
 
         reports.delete(chat_id, sender_id)
         progress = progress or Progress(chat_id)
-        progress.update("⏳ فایل دریافت شد؛ بررسی نگارشی و ساختاری در حال اجراست…")
+        progress.update("⏳ ۱ از ۳ — دریافت فایل…")
         src = os.path.join(tmp, name)
         download(doc["file_id"], src)
         validate_document(src, "pdf" if is_pdf else "docx", MAX_MB * 1024 * 1024)
+        progress.update("⏳ ۲ از ۳ — بررسی املا، نگارش، ساختار و ارجاع‌ها…")
 
         with DocumentGuard(src, work_dir=tmp) as guard:
             work_src = guard.isolated_working_copy
@@ -360,7 +389,7 @@ def process_document(chat_id, doc, annotate_requested=False, mode=None, sender_i
             analyze = checker.analyze_pdf if is_pdf else checker.analyze
             d, issues, stats = analyze(work_src, mode, rules)
             guard.verify_original_intact()
-            progress.update("⏳ بررسی انجام شد؛ خروجی بازبینی در حال آماده‌سازی است…")
+            progress.update("⏳ ۳ از ۳ — درج کامنت‌ها و هایلایت در نسخهٔ بازبینی…")
             output = None
             review_failed = False
             if is_docx and d is not None:
@@ -535,16 +564,26 @@ def handle(update, pool):
         "time": time.strftime("%Y-%m-%d %H:%M:%S")
     }
 
-    if command == "/start" or text in ("🔄 شروع مجدد", "شروع مجدد", "شروع", "start"):
+    if command == "/cancel":
+        awaiting_feedback.discard(chat_id)
+        send(chat_id, "لغو شد. فایل یا متن خود را بفرستید.")
+    elif chat_id in awaiting_feedback and text and not command and not msg.get("document"):
+        awaiting_feedback.discard(chat_id)
+        if save_feedback(text, modes.get(chat_id, "thesis")):
+            send(chat_id, "🙏 ممنون! پیام شما ثبت شد و برای بهترکردن ربات بررسی می‌شود.")
+        else:
+            send(chat_id, "ثبت پیام ممکن نشد؛ لطفاً کمی بعد دوباره /feedback را بزنید.")
+    elif command == "/feedback" or text == FEEDBACK_BUTTON:
+        awaiting_feedback.add(chat_id)
+        send(chat_id, FEEDBACK_PROMPT)
+    elif command == "/start" or text in ("🔄 شروع مجدد", "شروع مجدد", "شروع", "start"):
+        awaiting_feedback.discard(chat_id)
         send(chat_id, WELCOME)
     elif command == "/help" or text in ("📖 راهنما", "راهنما", "help"):
         send(chat_id, HELP)
     elif command == "/thesis" or text in ("🎓 پایان‌نامه", "پایان‌نامه", "پایان نامه"):
         modes[chat_id] = "thesis"
-        send(chat_id, "🎓 الگوی «پایان‌نامه» فعال شد. فایل Word، PDF یا متن خود را ارسال کنید.")
-    elif command == "/tums":
-        modes[chat_id] = "tums"
-        send(chat_id, "🏛 پروفایل دانشگاه علوم پزشکی تهران فعال شد. نتایج شیوه‌نامه برای بازبینی ارائه می‌شوند.")
+        send(chat_id, "✅ حالت «پایان‌نامه» فعال شد.\nحالا فایل Word (.docx)، PDF یا متن خود را بفرستید.")
     elif command == "/kashan" or text in ("🏛 دانشگاه کاشان", "دانشگاه کاشان", "کاشان"):
         args = text.split()[1:] if command else []
         choices = {"master": "kashan_master", "phd": "kashan_phd"}
@@ -585,10 +624,10 @@ def handle(update, pool):
         send(chat_id, "منوی اصلی؛ حالت انتخاب‌شده حفظ شد. فایل یا متن خود را بفرستید.")
     elif command == "/article" or text in ("📑 مقاله پژوهشی", "مقاله پژوهشی", "مقاله"):
         modes[chat_id] = "article"
-        send(chat_id, "📑 الگوی «مقاله علمی/پژوهشی» فعال شد. فایل Word، PDF یا متن خود را ارسال کنید.")
+        send(chat_id, "✅ حالت «مقالهٔ پژوهشی» فعال شد.\nحالا فایل Word (.docx)، PDF یا متن مقاله را بفرستید.")
     elif command == "/english" or text in ("🇬🇧 متن انگلیسی", "متن انگلیسی", "انگلیسی"):
         modes[chat_id] = "english"
-        send(chat_id, "🇬🇧 الگوی «متن/مقاله انگلیسی» فعال شد. متن یا فایل انگلیسی خود را ارسال فرمایید.")
+        send(chat_id, "✅ حالت «متن انگلیسی» فعال شد.\nحالا متن یا فایل انگلیسی خود را بفرستید.")
     elif command == "/report" or text == "📋 گزارش کامل":
         args = text.split()[1:] if command else []
         if len(args) > 1 or (args and args[0].lower() not in {"html", "txt", "all"}):
@@ -605,7 +644,6 @@ def handle(update, pool):
         cur_mode = modes.get(chat_id, "thesis")
         title_map = {
             "thesis": "پایان‌نامه دانشگاهی 🎓",
-            "tums": "دانشگاه علوم پزشکی تهران 🏛",
             "article": "مقاله پژوهشی 📑",
             "english": "متن انگلیسی 🇬🇧"
         }
@@ -622,7 +660,7 @@ def handle(update, pool):
              f"Word با کامنت و زرد، خروجی پیش‌فرض است؛ سقف تعداد کامنت: {MAX_COMMENTS if MAX_COMMENTS is not None else 'بدون سقف جداگانه'}.\n"
              + scope_description +
              f"گزارش کامل: /report؛ نگهداری در حافظه تا {REPORT_TTL_MINUTES} دقیقه.\n"
-             "انتخاب حالت: /thesis، /tums، /kashan، /article یا /english.")
+             "انتخاب حالت: /thesis، /kashan، /article یا /english.\n" + CREDIT)
     elif command == "/privacy":
         send(chat_id, "🔒 فایل شما برای بررسی به میزبان ربات منتقل می‌شود و فایل‌های موقت پس از پایان یا خطای پردازش پاک‌سازی می‌شوند. "
              f"فقط گزارش آخرین بررسی (شامل شاهدهایی از متن) تا {REPORT_TTL_MINUTES} دقیقه در حافظهٔ میزبان می‌ماند؛ "
@@ -633,8 +671,8 @@ def handle(update, pool):
              "نگهداری نسخه‌های پیام و فایل در بله و زیرساخت میزبان تابع سیاست‌های آن‌هاست. "
              "پس از توقف ناگهانی سیستم ممکن است پاک‌سازی عادی کامل نشود. نتایج جایگزین بازبینی پژوهشگر نیستند.")
     elif command:
-        send(chat_id, "این دستور شناخته نشد. /help راهنما و /settings تنظیمات فعلی را نشان می‌دهد. "
-             "Word به‌طور پیش‌فرض کامنت‌دار برمی‌گردد؛ /report گزارش کامل را می‌فرستد.")
+        send(chat_id, "این دستور شناخته نشد. برای شروع، فایل یا متن خود را بفرستید؛ "
+             "/help راهنما و /settings وضعیت فعلی را نشان می‌دهد.")
     elif msg.get("document"):
         doc = msg["document"]
         name = doc.get("file_name") or ""
@@ -745,7 +783,6 @@ def setup_commands():
         commands = [
             {"command": "start", "description": "شروع کار با ربات"},
             {"command": "thesis", "description": "بررسی پایان‌نامه و رساله"},
-            {"command": "tums", "description": "پروفایل دانشگاه علوم پزشکی تهران"},
             {"command": "kashan", "description": "دانشگاه کاشان؛ انتخاب مقطع"},
             {"command": "kashan_master", "description": "کاشان — کارشناسی ارشد"},
             {"command": "kashan_phd", "description": "کاشان — دکتری"},
@@ -759,6 +796,7 @@ def setup_commands():
             {"command": "report", "description": "گزارش کامل آخرین بررسی شما"},
             {"command": "comments", "description": "راهنمای دیدن کامنت‌های Word"},
             {"command": "forget", "description": "حذف گزارش نگهداری‌شده"},
+            {"command": "feedback", "description": "پیشنهاد و گزارش اشکال به سازنده"},
             {"command": "help", "description": "راهنمای کار با ربات"}
         ]
         call("setMyCommands", commands=commands)

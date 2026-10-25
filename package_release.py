@@ -16,7 +16,7 @@ ROOT_FILES = (
     "checker.py", "academic_checker.py", "analysis_model.py", "bot.py", "bot_runtime.py",
     "doc_guard.py", "document_blocks.py", "en_checker.py", "pdf_handler.py", "protected_content.py",
     "report_artifacts.py", "report_store.py", "pdf_annotator.py", "review_cli.py", "word_review_report.py", "unified_word_review.py", "rule_registry.py", "run_benchmark.py", "safe_annotator.py",
-    "tums_checker.py", "kashan_checker.py", "web_runner.py", "package_release.py", "rules.json", "requirements.txt",
+    "tums_checker.py", "kashan_checker.py", "fa_spell.py", "structure_checks.py", "web_runner.py", "package_release.py", "rules.json", "requirements.txt",
     "README.md", ".env.example", ".dockerignore", "Dockerfile", "virastar-bot.service",
     "run.bat", "run.sh", "run_hidden.vbs", "install_startup.bat", "uninstall_startup.bat",
     "Procfile", "liara.json",
@@ -28,6 +28,7 @@ def build_release(root, destination):
     destination = Path(destination).absolute()
     sources = [root / name for name in ROOT_FILES]
     sources += sorted((root / "profiles").glob("*.json"))
+    sources += sorted((root / "lexicon").glob("*"))
     sources += sorted((root / "tests").glob("test_*.py"))
     sources += [root / "tests/benchmark_cases.json", root / "docs/PROFESSIONAL_UPGRADE.md",
                 root / "docs/STUDENT_EXPERIENCE.md",

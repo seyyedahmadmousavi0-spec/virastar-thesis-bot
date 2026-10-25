@@ -12,6 +12,7 @@ import io
 import json
 from pathlib import Path
 import posixpath
+import re
 import zipfile
 
 from lxml import etree
@@ -221,7 +222,25 @@ def _context_candidates(document):
     return candidates
 
 
-def _resolve_context(issue, candidates, document, by_path, by_index, by_element, heading_candidates):
+def _section_starts(document, by_element):
+    """Map 1-based Word section numbers to their first commentable paragraph."""
+    body = document.find(qn("w:body"))
+    starts, number, waiting = {}, 1, True
+    for child in body:
+        for paragraph in ([child] if child.tag == qn("w:p") else child.iter(qn("w:p"))):
+            if waiting and paragraph in by_element:
+                starts[number] = by_element[paragraph]
+                waiting = False
+        # A paragraph-level sectPr closes the current section after itself.
+        if child.tag == qn("w:p") and child.find("./" + qn("w:pPr") + "/" + qn("w:sectPr")) is not None:
+            number += 1
+            waiting = True
+    return starts
+
+
+def _resolve_context(issue, candidates, document, by_path, by_index, by_element, heading_candidates,
+                     section_starts=None):
+    section_starts = section_starts or {}
     unsupported = issue.story not in {"", "body", "table"} or issue.source_part.lstrip("/") not in {"", "word/document.xml"}
     if not unsupported:
         if issue.xml_path:
@@ -240,6 +259,11 @@ def _resolve_context(issue, candidates, document, by_path, by_index, by_element,
             candidate = by_index.get(issue.par_index)
             if candidate is not None:
                 return candidate, "paragraph"
+    # Page setup findings name a Word section ("بخش N"); attach them to the
+    # first commentable paragraph of that section.
+    section = re.fullmatch(r"بخش (\d+)", str(issue.loc or "").strip())
+    if not unsupported and section and int(section.group(1)) in section_starts:
+        return section_starts[int(section.group(1))], "section"
     # A related heading is a navigation aid only. Its text must match the
     # reported location unambiguously; never guess a semantic source phrase.
     location = " ".join(str(issue.loc or "").casefold().split())
@@ -255,6 +279,8 @@ def _context_text(issue, index, scope, reason):
     story_label = STORY_LABELS.get(issue.story, "بخش گزارش‌شدهٔ سند")
     if scope == "story":
         qualifier = f"ارجاع به {story_label}؛ عبارت زردشده محل دقیق ایراد نیست"
+    elif scope == "section":
+        qualifier = "تنظیم صفحهٔ این بخش از سند؛ عبارت زردشده خطا نیست و فقط آغاز بخش را نشان می‌دهد"
     elif scope == "paragraph":
         qualifier = "ارجاع در سطح پاراگراف؛ عبارت زردشده لزوماً خطا نیست"
     else:
@@ -289,11 +315,13 @@ def _add_context_comments(document, comments, remaining, findings, records, next
         title = " ".join(item["text"].casefold().split())
         if style_name.startswith(("heading", "title", "عنوان")) and 3 <= len(title) <= 200:
             heading_candidates.append((title, item))
+    section_starts = _section_starts(document, by_element)
     new_ids, context_records, highlighted = set(), [], set()
     characters = 0
     for index in remaining:
         issue = findings[index]
-        anchor, scope = _resolve_context(issue, candidates, document, by_path, by_index, by_element, heading_candidates)
+        anchor, scope = _resolve_context(issue, candidates, document, by_path, by_index, by_element,
+                                         heading_candidates, section_starts)
         text = _context_text(issue, index, scope, records[index].get("reason", ""))
         characters += len(text)
         if characters > MAX_REVIEW_CHARACTERS:

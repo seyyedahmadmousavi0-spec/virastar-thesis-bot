@@ -12,7 +12,7 @@ import re
 from doc_guard import atomic_write
 
 SCHEMA_VERSION = "2.0"
-PRODUCT_VERSION = "2.3.2"
+PRODUCT_VERSION = "2.4.0"
 CONFIDENCE_LABELS = {"A": "اطمینان بالا", "B": "نیازمند بازبینی", "C": "مبهم"}
 CATEGORY_LABELS = {
     "general": "بازبینی عمومی", "english_grammar": "دستور زبان انگلیسی",
@@ -145,7 +145,7 @@ def safe_unified_word_review(summary):
             if isinstance(path, str) and re.fullmatch(
                     r"/w:document/w:body(?:/w:[A-Za-z][A-Za-z0-9]*(?:\[[1-9][0-9]*\])?)+", path):
                 row["anchor_xml_path"] = path
-            if record.get("scope") in ("paragraph", "document", "story"):
+            if record.get("scope") in ("paragraph", "section", "document", "story"):
                 row["scope"] = record["scope"]
             story = record.get("source_story")
             if isinstance(story, str) and story in {"", *STORY_LABELS}:

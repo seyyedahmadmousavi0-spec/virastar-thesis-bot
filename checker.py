@@ -12,6 +12,7 @@ import re
 import time
 import hashlib
 import unicodedata
+import weakref
 from collections import Counter, defaultdict
 from dataclasses import dataclass
 from typing import Dict, List, Optional, Tuple
@@ -55,6 +56,9 @@ RULE_CATEGORIES = {
     "mi_prefix": "۱. غلط املایی و تایپوگرافی",
     "plural_space": "۱. غلط املایی و تایپوگرافی",
     "comparative_space": "۱. غلط املایی و تایپوگرافی",
+    "verb_suffix_space": "۱. غلط املایی و تایپوگرافی",
+    "spelling": "۱. غلط املایی و تایپوگرافی",
+    "he_suffix_join": "۱. غلط املایی و تایپوگرافی",
     "ye_space": "۱. غلط املایی و تایپوگرافی",
     "common_mistake": "۱. غلط املایی و تایپوگرافی",
     "repeated_word": "۱. غلط املایی و تایپوگرافی",
@@ -133,6 +137,12 @@ RULE_TITLES = {
     "mi_prefix": "پیشوند «می / نمی» بدون نیم‌فاصله",
     "plural_space": "«ها / های» جدا از واژه (نیم‌فاصله لازم است)",
     "comparative_space": "«تر / ترین» جدا از واژه",
+    "verb_suffix_space": "«اند / ایم / اید / ام» جدا از فعل",
+    "spelling": "احتمال غلط املایی (واژه‌نامه)",
+    "reference_uncited": "منبع فهرست‌شده بدون ارجاع در متن",
+    "term_inconsistency": "یک واژه با دو املای متفاوت در سند",
+    "caption_unreferenced": "جدول/شکل بدون ارجاع در متن",
+    "he_suffix_join": "پسوند چسبیده به «ه» پایانی",
     "ye_space": "«ی» اضافه‌ی جدا از واژه",
     "space_before_punct": "فاصله قبل از علائم نگارشی (، ؛ : . ؟ !)",
     "no_space_after_punct": "نبودن فاصله بعد از علائم نگارشی",
@@ -344,13 +354,32 @@ def snippet_of(text, m, pad=18):
     return ("…" if a else "") + out + ("…" if b < len(text) else "")
 
 
+_STYLE_NAMES = weakref.WeakKeyDictionary()
+
+
+def style_name(p):
+    """Lower-case paragraph style name, cached per XML paragraph.
+
+    python-docx resolves the default style by scanning every style on each
+    access; structure checks ask the same paragraphs thousands of times.
+    """
+    element = p._p
+    style_id = element.style
+    cached = _STYLE_NAMES.get(element)
+    if cached is not None and cached[0] == style_id:
+        return cached[1]
+    name = (p.style.name or "").lower() if p.style is not None else ""
+    _STYLE_NAMES[element] = (style_id, name)
+    return name
+
+
 def is_heading(p):
-    n = (p.style.name or "").lower() if p.style is not None else ""
+    n = style_name(p)
     return n.startswith("heading") or n.startswith("عنوان") or n == "title"
 
 
 def is_toc_style(p):
-    n = (p.style.name or "").lower() if p.style is not None else ""
+    n = style_name(p)
     return n.startswith("toc") or n.startswith("table of") or "فهرست" in n
 
 
@@ -441,7 +470,10 @@ REDUPLICATION_WORDS = {
     "کم", "ذره", "پله", "تک", "رفته", "قطره", "دسته", "بخش", "صفحه",
     "سطر", "نکته", "لحظه", "ثانیه", "قدم", "سال", "روز", "ماه",
     "یواش", "آرام", "دور", "نرم", "تکه", "بار", "برگ", "دانه", "گروه",
-    "مرحله", "سطح", "جزء", "تارتار", "یک", "دو"
+    "مرحله", "سطح", "جزء", "تارتار", "یک", "دو", "یکی", "آهسته", "تند",
+    "گاه", "جا", "خرده", "پاره", "رنگ", "جور", "لایه", "ردیف", "گام",
+    "نفر", "ساعت", "هفته", "دقیقه", "نوبت", "شاخه", "کوچه", "ورق", "موج",
+    "فوج", "دم", "هر"
 }
 REPEATED_WORD_RE = re.compile(r"(?<![" + FA + r"])([" + FA + r"]{2,})[ \u00a0]+\1(?![" + FA + "])")
 
@@ -465,6 +497,14 @@ TEXT_RULES = [
     ("comparative_space", "warn",
      re.compile("[" + FA + r"]{2,}[ \u00a0]+(?:تر|ترین)(?![" + FA + "])"),
      "«تر/ترین» باید با نیم‌فاصله به واژه بچسبد: «بزرگ‌تر»."),
+    # After a silent final «ه» the suffix must not join. «ام/ای» are excluded:
+    # «ابهام»، «الهام» and «انتهای» end the same way but are single words.
+    ("he_suffix_join", "warn",
+     re.compile("[" + FA + r"]{2,}ه(?:ها|های|هایی|اند|ایم|اید)(?![" + FA + "])"),
+     "پس از «ه» پایانی، پسوند جدا و با نیم‌فاصله نوشته می‌شود: «داده‌ها»، «کرده‌اند»."),
+    ("verb_suffix_space", "warn",
+     re.compile("[" + FA + r"]+ه[ \u00a0]+(?:اند|ایم|اید|ام)(?![" + FA + "])"),
+     "شناسهٔ فعل پس از صفت مفعولی با نیم‌فاصله می‌آید: «کرده‌اند»، «شده‌ایم»."),
     ("ye_space", "warn",
      re.compile("[" + FA + r"][ \u00a0]+ی(?![" + FA + "])"),
      "«ی» اضافه جدا از واژه است؛ «خانه‌ی» یا «خانهٔ»."),
@@ -492,14 +532,89 @@ TEXT_RULES = [
 ]
 
 
+_JOIN_RULES = {"plural_space", "comparative_space", "verb_suffix_space", "ye_space"}
+_FA_DIGITS = str.maketrans("0123456789٠١٢٣٤٥٦٧٨٩", "۰۱۲۳۴۵۶۷۸۹۰۱۲۳۴۵۶۷۸۹")
+
+
+def suggest_text_fix(rule, target):
+    """Return the corrected form of a typography witness, or "" to abstain.
+
+    Only the matched characters change; the comment shows the suggestion and
+    nothing is applied to the document.
+    """
+    if rule in _JOIN_RULES:
+        return re.sub(r"[  ]+(?=\S+$)", ZWNJ, target)
+    if rule == "mi_prefix":
+        return re.sub(r"^(ن?می)[  ]*", r"\1" + ZWNJ, target)
+    if rule == "he_suffix_join":
+        return re.sub(r"ه(?=(?:ها|های|هایی|اند|ایم|اید)$)", "ه" + ZWNJ, target, count=1)
+    if rule == "arabic_letters":
+        return target.replace("ي", "ی").replace("ك", "ک")
+    if rule in DIGIT_SCRIPT_RULES:
+        return target.translate(_FA_DIGITS)
+    if rule == "latin_punct":
+        return target.translate(str.maketrans(",;?", "،؛؟"))
+    if rule == "space_before_punct":
+        return target.strip("  ")
+    if rule == "no_space_after_punct":
+        return target + " "
+    if rule == "double_space":
+        return " "
+    if rule == "straight_quotes":
+        return "«" + target[1:-1] + "»"
+    return ""
+
+
+DIGIT_SCRIPT_RULES = {"arabic_digits", "latin_digits"}
+
+
+def digit_script_spans(spans):
+    """Digit-shape rules only report the glyph script, never a value change.
+
+    A bare number therefore stays visible to them; numbers inside units,
+    formulas, statistics, citations or identifiers remain protected.
+    """
+    return [span for span in spans if span.kind != "number"]
+
+
 def _word_re(w):
     return re.compile("(?<![" + FA + ZWNJ + "])" + re.escape(w) + "(?![" + FA + ZWNJ + "])")
 
 
-def check_text(par_index, text, loc, rules, in_refs=False, in_declaration=False, *, audit=None):
+def _spelling_issues(par_index, text, loc, rules, protected, counts):
+    import fa_spell
+    from protected_content import quoted_spans
+    out = []
+    # Quoted speech and citations keep their source spelling.
+    spans = list(protected) + quoted_spans(text)
+    for start, end, original, fix in fa_spell.find_misspellings(
+            text, counts, spans, rules.get("protected_terms", [])):
+        out.append(Issue(
+            "spelling", "warn",
+            f"احتمال غلط املایی؛ آیا منظور «{fix}» است؟ اگر نام یا اصطلاح تخصصی است، نادیده بگیرید.",
+            loc, snippet_of(text, _Span(start, end)),
+            par_index, fix, original, category=RULE_CATEGORIES["spelling"],
+            confidence=ConfidenceLevel.REVIEW_B.value, char_start=start, char_end=end))
+    return out
+
+
+class _Span:
+    """Minimal match-like object for snippet_of."""
+    def __init__(self, start, end):
+        self._start, self._end = start, end
+
+    def start(self):
+        return self._start
+
+    def end(self):
+        return self._end
+
+
+def check_text(par_index, text, loc, rules, in_refs=False, in_declaration=False, *, audit=None,
+               spelling=True, spelling_counts=None):
     from protected_content import ProtectedSpan
     if len(text) > rules.get("max_analysis_block_chars", 200000):
-        return [Issue("analysis_limit", "warn", "Block exceeds the analysis budget; manual review required.",
+        return [Issue("analysis_limit", "warn", "این بلوک از بودجهٔ بررسی بزرگ‌تر است؛ بررسی دستی لازم است.",
                       loc=loc, par_index=par_index, confidence="B", extraction_status="analysis_skipped")]
     protected = ProtectedContentDetector.find_spans(text)
     if in_refs:
@@ -510,6 +625,14 @@ def check_text(par_index, text, loc, rules, in_refs=False, in_declaration=False,
             for m in re.finditer(re.escape(term), text):
                 protected.append(ProtectedSpan(m.start(), m.end(), "configured_term", m.group()))
     issues = _check_text(par_index, text, loc, rules, in_refs, in_declaration)
+    if spelling and not in_refs and rules.get("spelling", True) and has_fa(text):
+        if spelling_counts is None:
+            import fa_spell
+            spelling_counts = fa_spell.document_counts([text])
+        # A specific rule on the same span («بعنوان») explains it better.
+        covered = [(i.char_start, i.char_end) for i in issues if i.char_start >= 0]
+        issues += [issue for issue in _spelling_issues(par_index, text, loc, rules, protected, spelling_counts)
+                   if not any(issue.char_start < end and start < issue.char_end for start, end in covered)]
     result, suppressed = [], []
     for issue in issues:
         if issue.rule_id in rules.get("disabled_rules", []):
@@ -521,13 +644,15 @@ def check_text(par_index, text, loc, rules, in_refs=False, in_declaration=False,
             if not exact:
                 issue.confidence = "C"
                 issue.char_start = issue.char_end = -1
-            elif ProtectedContentDetector.is_protected(issue.char_start, issue.char_end, protected):
+            elif ProtectedContentDetector.is_protected(
+                    issue.char_start, issue.char_end,
+                    digit_script_spans(protected) if issue.rule_id in DIGIT_SCRIPT_RULES else protected):
                 continue
             else:
                 issue.snippet = text[max(0, issue.char_start-18):min(len(text), issue.char_end+18)]
         elif issue.confidence == "A":
             issue.confidence = "B"
-        if issue.rule_id in {"comparative_space", "ye_space", "latin_punct", "repeated_word", "EN_SVA"}:
+        if issue.rule_id in {"comparative_space", "ye_space", "verb_suffix_space", "he_suffix_join", "latin_punct", "repeated_word", "EN_SVA"}:
             issue.confidence = "B"
         if issue.rule_id == "mi_prefix":
             following = text[issue.char_start:]
@@ -550,13 +675,15 @@ def _check_text(par_index, text, loc, rules, in_refs=False, in_declaration=False
 
     # استخراج محدوده‌های محافظت‌شده علمی (فرمول‌ها، یکاها، مواد شیمیایی، DOI، آمار و ارجاعات)
     prot_spans = ProtectedContentDetector.find_spans(text)
+    digit_spans = digit_script_spans(prot_spans)
 
     # تایپوگرافی عمومی
     for rule, sev, rx, msg in TEXT_RULES:
         if rule in ("arabic_digits", "arabic_letters") or has_fa(text):
+            spans = digit_spans if rule in DIGIT_SCRIPT_RULES else prot_spans
             for m in rx.finditer(text):
                 # اگر با محدوده علمی محافظت‌شده تداخل داشته باشد، قاعده اعمال نشود
-                if ProtectedContentDetector.is_protected(m.start(), m.end(), prot_spans):
+                if ProtectedContentDetector.is_protected(m.start(), m.end(), spans):
                     continue
 
                 # فیلتر استثناهای علمی ارقام لاتین (واحدها، درصدها، شاخص‌های آماری)
@@ -573,7 +700,8 @@ def _check_text(par_index, text, loc, rules, in_refs=False, in_declaration=False
                         continue
 
                 conf = ConfidenceLevel.HIGH_A.value
-                if rule in ("straight_quotes", "leading_space"):
+                # Some style guides accept Latin digits in Persian text.
+                if rule in ("straight_quotes", "leading_space", "latin_digits"):
                     conf = ConfidenceLevel.REVIEW_B.value
 
                 cat = RULE_CATEGORIES.get(rule, "۱. غلط املایی و تایپوگرافی")
@@ -584,7 +712,7 @@ def _check_text(par_index, text, loc, rules, in_refs=False, in_declaration=False
                     loc=loc,
                     snippet=snippet_of(text, m),
                     par_index=par_index,
-                    suggestion="",
+                    suggestion=suggest_text_fix(rule, m.group(0)),
                     target_text=m.group(0),
                     category=cat,
                     confidence=conf,
@@ -769,7 +897,9 @@ def check_page(doc, rules, mode="thesis"):
 def check_body_format(doc, rules, ctx):
     if not rules.get("profile_checks", {}).get("body_format", True):
         return []
-    out = FindingBuffer()
+    # At most a few findings per paragraph; grouping below must see them all
+    # before the finding budget applies, or a Style-wide problem is not folded.
+    out = []
     b = rules["body"]
     for i, p, heading in ctx:
         text = p.text
@@ -829,7 +959,35 @@ def check_body_format(doc, rules, ctx):
         # جهت
         if has_fa(text) and not eff_bidi(doc, p):
             out.append(Issue("rtl", "warn", "جهت پاراگراف راست‌به‌چپ (RTL) نیست.", loc, snip, i))
-    return out
+    budget = FindingBuffer()
+    budget.extend(group_repeated_format(out, rules.get("limits", {}).get("group_format_findings_after", 3)))
+    return budget
+
+
+def group_repeated_format(issues, threshold):
+    """Fold one formatting problem repeated in many paragraphs into its first
+    occurrence. Every affected paragraph number stays in that comment, so no
+    instance is dropped, but a Style-wide problem yields one comment, not one
+    per paragraph of the thesis."""
+    groups = defaultdict(list)
+    for issue in issues:
+        groups[(issue.rule_id, issue.message)].append(issue)
+    result = []
+    for (_, message), members in groups.items():
+        if not threshold or len(members) <= threshold:
+            result.extend(members)
+            continue
+        first = members[0]
+        numbers = [str(member.par_index + 1) for member in members]
+        # Word comments stay short; the report snippet keeps the full list.
+        more = "…" if len(numbers) > 8 else ""
+        first.message = (f"{message} در {len(members)} پاراگراف تکرار شده "
+                         f"(پاراگراف {'، '.join(numbers[:8])}{more}).")
+        first.snippet = "پاراگراف‌های " + "، ".join(numbers)
+        first.suggestion = ("احتمالاً Style مشترک این پاراگراف‌ها (مثلاً Normal) نادرست است؛ "
+                            "اصلاح Style همهٔ موارد را یک‌جا درست می‌کند.")
+        result.append(first)
+    return result
 
 
 @bounded_findings
@@ -864,6 +1022,41 @@ def check_fields(doc):
 ORD = {"اول": 1, "دوم": 2, "سوم": 3, "چهارم": 4, "پنجم": 5, "ششم": 6, "هفتم": 7, "هشتم": 8, "نهم": 9, "دهم": 10}
 CHAPTER_RE = re.compile(r"^\s*فصل\s*(اول|دوم|سوم|چهارم|پنجم|ششم|هفتم|هشتم|نهم|دهم|[0-9۰-۹]+)")
 CAPTION_RE = re.compile(r"^\s*(جدول|شکل|نمودار|تصویر)\s*(?:شماره\s*)?\(?([0-9۰-۹]+)(?:[\s\-–ـ\.]*([0-9۰-۹]+))?\)?")
+
+
+def _uncaptioned_tables(doc):
+    """Return (order, preceding body paragraph index) for top-level tables
+    whose nearest non-empty neighbouring paragraphs are not «جدول …» captions.
+    An empty list means the layout could not be resolved table by table."""
+    body = doc.element.body
+    index_of = {p._p: i for i, p in enumerate(doc.paragraphs)}
+    children = list(body)
+    tables = [position for position, child in enumerate(children) if child.tag == qn("w:tbl")]
+    if len(tables) != len(doc.tables):
+        return []
+
+    def neighbour(position, step, cross_tables=False):
+        position += step
+        while 0 <= position < len(children):
+            child = children[position]
+            if child.tag == qn("w:tbl") and not cross_tables:
+                return None
+            if child.tag == qn("w:p") and "".join(child.itertext()).strip():
+                return child
+            position += step
+        return None
+
+    def is_table_caption(node):
+        match = node is not None and CAPTION_RE.match("".join(node.itertext()))
+        return bool(match) and match.group(1) == "جدول"
+
+    result = []
+    for number, position in enumerate(tables, 1):
+        before, after = neighbour(position, -1), neighbour(position, 1)
+        if is_table_caption(before) or is_table_caption(after):
+            continue
+        result.append((number, index_of.get(neighbour(position, -1, cross_tables=True))))
+    return result
 
 
 def find_section(paragraphs, patterns):
@@ -971,8 +1164,21 @@ def check_structure(doc, rules, mode, stats):
     n_tables, n_imgs = len(doc.tables), len(doc.inline_shapes)
     stats["tables"], stats["images"] = n_tables, n_imgs
     if n_tables > len(kinds["جدول"]):
-        out.append(Issue("caption_missing", "warn",
-                         f"{n_tables} جدول در فایل هست ولی فقط {len(kinds['جدول'])} عنوان «جدول …» پیدا شد."))
+        uncaptioned = _uncaptioned_tables(doc)
+        if uncaptioned:
+            # Anchor each table on the nearest preceding body paragraph.
+            for number, anchor in uncaptioned:
+                if anchor is None:
+                    out.append(Issue("caption_missing", "warn",
+                                     f"جدول {number} (به ترتیب در سند) عنوان «جدول …» پیش یا پس از خود ندارد."))
+                else:
+                    out.append(Issue("caption_missing", "warn",
+                                     f"این نزدیک‌ترین پاراگراف پیش از جدول {number} سند (به ترتیب) است؛ "
+                                     "آن جدول عنوان «جدول …» بلافاصله پیش یا پس از خود ندارد.",
+                                     f"پاراگراف {anchor + 1}", ps[anchor].text[:50], anchor))
+        else:
+            out.append(Issue("caption_missing", "warn",
+                             f"{n_tables} جدول در فایل هست ولی فقط {len(kinds['جدول'])} عنوان «جدول …» پیدا شد."))
     if n_imgs > len(kinds["شکل"]) + len(kinds["نمودار"]):
         out.append(Issue("caption_missing", "warn",
                          f"{n_imgs} تصویر در فایل هست ولی فقط {len(kinds['شکل']) + len(kinds['نمودار'])} "
@@ -1040,7 +1246,12 @@ def _check_citations(doc, rules, mode="thesis"):
         if text.strip():
             refs.append((index,text))
     if mode=="tums":
-        out.extend(tums_checker.check_tums_references([text for _,text in refs]))
+        for issue in tums_checker.check_tums_references([text for _,text in refs]):
+            # "منبع شماره N" is the Nth extracted entry; anchor it there.
+            number = re.search(r"\d+", to_latin_digits(issue.loc or ""))
+            if number and 1 <= int(number.group()) <= len(refs):
+                issue.par_index = refs[int(number.group()) - 1][0]
+            out.append(issue)
 
     normalized=[to_latin_digits(norm(text)) for _,text in refs]
     author_index = defaultdict(list)
@@ -1073,8 +1284,8 @@ def _check_citations(doc, rules, mode="thesis"):
             if len(hits)==1:
                 continue
             rule="cite_ambiguous_ref" if hits else "cite_missing_ref"
-            reason=("Multiple bibliography candidates; manual disambiguation required."
-                    if hits else "No author/year candidate found in extracted references; review spelling, year suffix and bibliography structure.")
+            reason=("برای این ارجاع چند مدخل نامزد در فهرست منابع هست؛ تطبیق دستی لازم است."
+                    if hits else "مدخلی با همین نام نویسنده و سال در فهرست منابع پیدا نشد؛ املای نام، سال و وجود منبع را بررسی کنید.")
             out.append(Issue(rule,"warn",reason,f"Paragraph {index+1}",text[left:right],index,
                 target_text=text[left:right],category="citation_consistency",
                 confidence="C" if hits else "B",char_start=left,char_end=right,location_status="exact"))
@@ -1089,13 +1300,13 @@ def _check_citations(doc, rules, mode="thesis"):
                     break
                 values.update(range(first,last+1))
             if not valid:
-                out.append(Issue("numeric_cite_ambiguous","info","Unreliable numeric range; manual review required.",
+                out.append(Issue("numeric_cite_ambiguous","info","بازهٔ ارجاع عددی قابل اعتماد نیست؛ بررسی دستی لازم است.",
                                  f"Paragraph {index+1}",match.group(),index,confidence="C"))
                 continue
             missing=values-set(labels) if numbered else {v for v in values if v>len(refs)}
             if missing and refs:
                 out.append(Issue("numeric_cite","warn",
-                    f"No extracted reference candidate for numbers {sorted(missing)}; bibliography numbering must be checked.",
+                    f"برای شماره‌های {sorted(missing)} مدخلی در فهرست منابع پیدا نشد؛ شماره‌گذاری منابع را بررسی کنید.",
                     f"Paragraph {index+1}",match.group(),index,target_text=match.group(),
                     category="citation_consistency",confidence="B",char_start=match.start(),
                     char_end=match.end(),location_status="exact"))
@@ -1105,6 +1316,30 @@ def _check_citations(doc, rules, mode="thesis"):
 # ----------------------------------------------------------------------------
 # ابزار یکپارچه‌سازی و رفع تکرار ایرادها
 # ----------------------------------------------------------------------------
+@bounded_findings
+def check_consistency(doc, ref_i):
+    """Uncited references, mixed spellings of one term, unreferenced captions."""
+    import structure_checks
+    paragraphs = doc.paragraphs
+    out = FindingBuffer()
+    if ref_i is not None:
+        end = next((index for index in range(ref_i + 1, len(paragraphs))
+                    if any(norm(paragraphs[index].text) == norm(h) for h in AFTER_REFS_HEAD)), len(paragraphs))
+        entries = [to_latin_digits(norm(paragraphs[index].text)) for index in range(ref_i + 1, end)
+                   if paragraphs[index].text.strip()]
+        labels = [re.match(r"^\s*(?:\[(\d+)\]|(\d+)[.)])\s*", text) for text in entries]
+        numbered = None
+        if entries and all(labels):
+            numbered = [int(match.group(1) or match.group(2)) for match in labels]
+        out.extend(structure_checks.uncited_references(paragraphs, ref_i, end, numbered))
+    # Bibliography entries and table-of-contents lines keep their own forms.
+    skip = {index for index, paragraph in enumerate(paragraphs)
+            if is_toc_style(paragraph) or (ref_i is not None and index > ref_i)}
+    out.extend(structure_checks.inconsistent_terms(paragraphs, skip))
+    out.extend(structure_checks.unreferenced_captions(paragraphs, skip))
+    return out
+
+
 def deduplicate_issues(issues: List[Issue]) -> List[Issue]:
     """حذف هشدارهای تکراری یا همپوشان در یک محل واحد."""
     seen = set()
@@ -1152,6 +1387,9 @@ def analyze(path, mode="thesis", rules=None):
     stats["words"] = sum(len(words(p.text)) for p in doc.paragraphs)
 
     cit_issues, ref_i = check_citations(doc, rules, mode=mode)
+    import fa_spell
+    # Document-wide counts: a repeated unknown word is a name or term.
+    spell_counts = fa_spell.document_counts(block.text for block in blocks)
 
     blank_run = 0
     analyzed_blocks = set()
@@ -1175,7 +1413,8 @@ def analyze(path, mode="thesis", rules=None):
         blank_run = 0
         in_refs = ref_i is not None and i > ref_i
         in_decl = any(kw in h.lower() for kw in ["تعهد", "اصالت", "سپاس", "تقدیم", "declaration"])
-        found = check_text(i, text, f"زیر «{h}»، پاراگراف {i + 1}", rules, in_refs, in_declaration=in_decl, audit=stats)
+        found = check_text(i, text, f"زیر «{h}»، پاراگراف {i + 1}", rules, in_refs, in_declaration=in_decl, audit=stats,
+                           spelling_counts=spell_counts)
         issues += _attach_block_issues(found, block) if block is not None else found
         if block is not None:
             analyzed_blocks.add(block.block_id)
@@ -1191,7 +1430,7 @@ def analyze(path, mode="thesis", rules=None):
             break
         if block.story == "table":
             table_cells_count += 1
-        found = check_text(-1, block.text, block.location, rules, audit=stats)
+        found = check_text(-1, block.text, block.location, rules, audit=stats, spelling_counts=spell_counts)
         issues += _attach_block_issues(found, block)
         analyzed_blocks.add(block.block_id)
     stats["tables"] = len(doc.tables)
@@ -1208,6 +1447,7 @@ def analyze(path, mode="thesis", rules=None):
         issues += check_fields(doc)
     issues += check_structure(doc, rules, mode, stats)
     issues += cit_issues
+    issues += check_consistency(doc, ref_i)
     if mode in kashan_checker.MODES:
         stats["images"] = len(doc.inline_shapes)
         issues += kashan_checker.check_document(doc, blocks, stats, rules)
@@ -1303,7 +1543,8 @@ def analyze_pdf(pdf_path, mode="thesis", rules=None):
                 stats["skipped_blocks"] += 1
                 par_idx += 1
                 continue
-            found = check_text(-1, par_text, loc, rules, audit=stats)
+            # PDF extraction can split Persian letters; spelling would misfire.
+            found = check_text(-1, par_text, loc, rules, audit=stats, spelling=False)
             for issue in found:
                 issue.block_id = block["block_id"]
                 issue.source_part = f"pdf/page/{p_num}"
@@ -1371,12 +1612,14 @@ def analyze_text(raw_text, mode="thesis", rules=None):
     stats["words"] = len(words(raw_text))
 
     stats["skipped_blocks"] = 0
+    import fa_spell
+    spell_counts = fa_spell.document_counts(paragraphs)
     for i, p in enumerate(paragraphs):
         if len(issues) >= rules.get("max_findings", 10000):
             stats["skipped_blocks"] += 1
             continue
         loc = f"پاراگراف {i + 1}"
-        found = check_text(i, p, loc, rules, audit=stats)
+        found = check_text(i, p, loc, rules, audit=stats, spelling_counts=spell_counts)
         for issue in found:
             issue.block_id = f"text:p{i+1}"
             issue.story = "text"
@@ -1542,6 +1785,27 @@ def build_report(issues, stats, rules, examples=None):
     return "\n".join(lines)
 
 
+_TOPICS = (
+    ("✏️ املا و نگارش", lambda r: r in _ORTHOGRAPHY_RULES),
+    ("🎯 سبک علمی", lambda r: r.startswith("ACAD_") or r in {"informal_word", "long_sentence", "long_paragraph"}),
+    ("🇬🇧 انگلیسی", lambda r: r.startswith("EN_")),
+    ("📚 ارجاع و منابع", lambda r: "cite" in r or "REF" in r or r == "reference_uncited"),
+    ("📐 صفحه‌آرایی و قالب", lambda r: r.startswith(("page_", "font_", "size_")) or r in {
+        "line_spacing", "alignment", "rtl", "blank_lines", "TUMS_PAGE_MARGIN"}),
+    ("🧱 ساختار سند", lambda r: True),
+)
+_ORTHOGRAPHY_RULES = {rule for rule, *_ in TEXT_RULES} | {
+    "common_mistake", "spelling", "repeated_word", "term_inconsistency"}
+
+
+def topic_breakdown(issues):
+    """«✏️ املا و نگارش: 12 · 📚 ارجاع و منابع: 2» in a fixed, readable order."""
+    counts = Counter()
+    for issue in issues:
+        counts[next(label for label, test in _TOPICS if test(issue.rule_id))] += 1
+    return " · ".join(f"{label}: {counts[label]}" for label, _ in _TOPICS if counts[label])
+
+
 def build_summary(issues, stats, rules):
     """A short student-facing receipt built after annotation has been validated."""
     issues = list(issues)
@@ -1557,6 +1821,8 @@ def build_summary(issues, stats, rules):
         title,
         f"A، اطمینان بالا: {conf['A']} · B، نیازمند بازبینی: {conf['B']} · C، مبهم: {ambiguous if ambiguous is not None else 'نامشخص'}",
     ]
+    if issues:
+        lines.insert(1, f"🔎 {len(issues)} مورد برای بازبینی — " + topic_breakdown(issues))
     if stats.get("mode"):
         mode_title = rules.get("modes", {}).get(stats["mode"], {}).get("title", stats["mode"])
         lines.insert(1, ("🏛 " if stats["mode"] in kashan_checker.MODES else "الگوی بررسی: ") + mode_title)

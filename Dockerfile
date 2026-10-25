@@ -8,6 +8,7 @@ RUN python -m pip install --no-cache-dir -r requirements.txt \
 
 COPY *.py *.json ./
 COPY profiles ./profiles
+COPY lexicon ./lexicon
 
 ENV PORT=10000
 ENV PYTHONUNBUFFERED=1 PYTHONDONTWRITEBYTECODE=1

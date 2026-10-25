@@ -127,7 +127,7 @@ def check_tums_references(refs: List[str]) -> List[Issue]:
             ))
 
         # بررسی ذکر ص یا pp برای شماره صفحات
-        has_page = bool(re.search(r"(\bص\s*[۰-۹0-9]+|\bpp?\.\s*[0-9]+)", ref, re.IGNORECASE))
+        has_page = bool(re.search(r"((?<!\w)صص?\.?\s*[۰-۹0-9]+|\bpp?\.\s*[0-9]+)", ref, re.IGNORECASE))
         if not has_page and len(ref.split()) > 7:
             issues.append(Issue(
                 rule_id="TUMS_REF_PAGE_FORMAT",
@@ -140,6 +140,9 @@ def check_tums_references(refs: List[str]) -> List[Issue]:
             ))
 
     return issues
+
+
+_SIDES = {"top": "بالا", "bottom": "پایین", "left": "چپ", "right": "راست"}
 
 
 def check_tums_margins(sections) -> List[Issue]:
@@ -158,7 +161,8 @@ def check_tums_margins(sections) -> List[Issue]:
             measured = value / 360000
             if all(abs(measured - target) > tolerance for target in permitted):
                 issues.append(Issue("TUMS_PAGE_MARGIN", "warn",
-                    f"Section {index}: {side} margin is {measured:.2f} cm; local profile candidates: {permitted}. Review section/page role.",
-                    f"Section {index}", category="tums_guideline", confidence="B",
+                    f"بخش {index}: حاشیهٔ {_SIDES[side]} {measured:.2f} سانتی‌متر است؛ مقادیر مجاز پروفایل: "
+                    f"{'، '.join(f'{v:g}' for v in permitted)} سانتی‌متر. نقش صفحه (فرد/زوج/عنوان فصل) را بررسی کنید.",
+                    f"بخش {index}", category="tums_guideline", confidence="B",
                     rule_version=profile.get("profile_version", "1")))
     return issues

@@ -70,7 +70,7 @@ _TITLES = {
     "ACAD_FIRST_PERSON": "بازبینی شیوهٔ بیان نویسنده", "ACAD_COHESION": "بازبینی نشانگرهای پیوند",
     "cite_missing_ref": "بازبینی تطبیق نام و سال", "cite_ambiguous_ref": "چند نامزد برای ارجاع",
     "numeric_cite": "بازبینی ارجاع عددی", "numeric_cite_ambiguous": "بازهٔ عددی نامطمئن",
-    "comparative_space": "بازبینی پسوند تفضیل", "ye_space": "بازبینی یای پیوندی",
+    "comparative_space": "بازبینی پسوند تفضیل", "verb_suffix_space": "بازبینی شناسهٔ فعل", "spelling": "احتمال غلط املایی", "reference_uncited": "منبع بدون ارجاع در متن", "term_inconsistency": "یکسان‌نبودن املای واژه", "caption_unreferenced": "جدول/شکل بدون ارجاع در متن", "he_suffix_join": "پسوند پس از «ه» پایانی", "ye_space": "بازبینی یای پیوندی",
     "repeated_word": "بازبینی تکرار واژه", "straight_quotes": "پیشنهاد گیومهٔ فارسی",
     "latin_punct": "بازبینی نشانهٔ لاتین", "leading_space": "تورفتگی با فاصله",
     "arabic_digits": "بازبینی شکل رقم عربی", "latin_digits": "بازبینی شکل رقم لاتین",

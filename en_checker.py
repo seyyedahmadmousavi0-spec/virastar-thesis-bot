@@ -134,7 +134,7 @@ def _expected_article(word):
 
 
 def _grammar_issue(text, match, loc, par_index, suggestion, confidence="A", message=""):
-    return Issue("EN_SVA", "error", message or "Review number agreement in this noun phrase.",
+    return Issue("EN_SVA", "error", message or "تطابق مفرد/جمع در این گروه اسمی را بررسی کنید.",
                  loc, text[max(0, match.start() - 15):match.end() + 15], par_index,
                  suggestion, match.group(), category="english_grammar", confidence=confidence,
                  char_start=match.start(), char_end=match.end())
@@ -255,7 +255,7 @@ def check_english_text(text: str, loc: str = "", par_index: int = -1) -> List[Is
     # or singular noun modifiers in "many research studies" as mass nouns.
     noun_forms = {"result": "results", "datum": "data", "finding": "findings",
                   "study": "studies", "method": "methods", "effect": "effects"}
-    nominal = r"\b(these|those)\s+(result|datum|finding|study|method|effect)\b(?=\s+(?:indicate|show|suggest|demonstrate|support|are|were|have|can|may)\b|\s*[,.;:!?]|\s*$)"
+    nominal = r"\b(these|those)\s+(result|datum|finding|study|method|effect)\b(?=\s+(?:indicate|show|suggest|demonstrate|support|are|were|have|is|was|has|can|may)\b|\s*[,.;:!?]|\s*$)"
     for m in re.finditer(nominal, text, re.I):
         if not ProtectedContentDetector.is_protected(m.start(), m.end(), prot_spans):
             suggestion = m.group(1) + " " + noun_forms[m.group(2).lower()]
@@ -279,7 +279,7 @@ def check_english_text(text: str, loc: str = "", par_index: int = -1) -> List[Is
             replacement = replacements[original.lower()]
             if original[0].isupper():
                 replacement = replacement.capitalize()
-            issues.append(Issue("EN_SVA", "error", "Review the verb next to this explicit subject.",
+            issues.append(Issue("EN_SVA", "error", "تطابق فعل با فاعل (مفرد/جمع) را بررسی کنید.",
                                 loc, m.group(), par_index, replacement, original,
                                 category="english_grammar", char_start=m.start(1), char_end=m.end(1)))
 
@@ -298,7 +298,7 @@ def check_english_text(text: str, loc: str = "", par_index: int = -1) -> List[Is
             unmatched.append(index)
     unmatched.extend(index for _, index in stack)
     for index in sorted(unmatched):
-        issues.append(Issue("EN_BRACKET", "warn", "Review the order or matching of this delimiter in context.",
+        issues.append(Issue("EN_BRACKET", "warn", "جفت‌بودن یا ترتیب این پرانتز/کروشه را بررسی کنید.",
                             loc, text[max(0, index - 15):index + 16], par_index, target_text=text[index],
                             category="english_style", confidence="B", char_start=index, char_end=index + 1))
 

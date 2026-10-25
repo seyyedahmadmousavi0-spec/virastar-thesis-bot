@@ -22,8 +22,16 @@ SOURCE_LABEL = "خلاصهٔ راهنماهای ارسالی کاربر؛ اعت
 SOURCE_A_REASON = "تعلق راهنمای A به دانشگاه کاشان تأیید نشده؛ قواعد صفحه‌آرایی، تحویل CD و ایرانداک آن اعمال نشد."
 
 
+# Ezafe and vowel marks or tatweel do not change which heading is meant:
+# «تعهدنامهٔ»، «تعهدنامۀ» and «تعهدنامه‌ی اصالت» all name «تعهدنامه اصالت».
+_MARKS = re.compile("[ـً-ٰٕ]")
+_EZAFE_YE = re.compile(r"(?<=ه) ی(?= |$)")
+
+
 def _norm(text):
-    return " ".join(unicodedata.normalize("NFC", str(text)).translate(_TRANSLATE).split()).strip(" :：؛،.").casefold()
+    text = unicodedata.normalize("NFC", str(text)).replace("ۀ", "ه").translate(_TRANSLATE)
+    text = _EZAFE_YE.sub("", _MARKS.sub("", text))
+    return " ".join(text.split()).strip(" :：؛،.").casefold()
 
 
 def _source(degree, section):

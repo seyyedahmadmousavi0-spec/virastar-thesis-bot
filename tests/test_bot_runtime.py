@@ -137,8 +137,11 @@ class BotRuntimeTests(unittest.TestCase):
         bot.handle(self.update(text="/articlex"), self.pool)
         self.assertNotIn(1, bot.modes)
         self.assertFalse(self.pool.calls)
+        # The Tehran medical-university profile is no longer offered in the bot.
         bot.handle(self.update(text="/tums"), self.pool)
-        self.assertEqual("tums", bot.modes[1])
+        self.assertNotIn(1, bot.modes)
+        bot.handle(self.update(text="/article"), self.pool)
+        self.assertEqual("article", bot.modes[1])
         bot.handle(self.update(text="/privacy"), self.pool)
         self.assertIn("موقت", self.send.call_args.args[1])
 
