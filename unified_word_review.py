@@ -379,16 +379,23 @@ def _validated_records(issues, stats):
         issue = issues[index]
         if (any(record.get(key) != getattr(issue, key) for key in
                 ("rule_id", "confidence", "block_id", "source_part", "xml_path", "story", "par_index", "char_start", "char_end"))
-                or record.get("status") not in {"applied", "unapplied"}
-                or (record.get("status") == "applied" and record.get("anchor_scope") not in {"exact", "paragraph"})):
+                or record.get("status") not in {"applied", "unapplied", "folded"}
+                or (record.get("status") in {"applied", "folded"} and record.get("anchor_scope") not in {"exact", "paragraph"})):
             raise DocumentIntegrityError("Annotation audit does not match findings")
         mapped[index] = record
     applied = sum(record["status"] == "applied" for record in records)
+    folded = sum(record["status"] == "folded" for record in records)
+    # A folded repeat is highlighted in place and counted in the comment of
+    # the first occurrence of the same mistake, which must itself be applied.
+    if any(record["status"] == "folded" and mapped.get(record.get("folded_into"), {}).get("status") != "applied"
+           for record in records):
+        raise DocumentIntegrityError("Folded finding has no commented first occurrence")
     exact = sum(record["status"] == "applied" and record["anchor_scope"] == "exact" for record in records)
     paragraph = applied - exact
-    if (summary.get("applied") != applied or summary.get("unapplied") != len(issues) - applied
+    if (summary.get("applied") != applied or summary.get("folded", 0) != folded
+            or summary.get("unapplied") != len(issues) - applied - folded
             or summary.get("exact_applied") != exact or summary.get("paragraph_applied") != paragraph
-            or summary.get("highlighted") != applied):
+            or summary.get("highlighted") != applied + folded):
         raise DocumentIntegrityError("Inconsistent source annotation counts")
     return mapped, applied, exact, paragraph
 
@@ -410,8 +417,8 @@ def finalize_word_review(source_path, annotated_path, issues, stats, rules=None)
     if len(findings) > MAX_REVIEW_FINDINGS:
         raise WordReviewReportError("تعداد یافته‌ها از ظرفیت Word کامل بیشتر است؛ فایل ناقص منتشر نشد.")
     records, applied, exact, paragraph_count = _validated_records(findings, stats)
-    remaining = [index for index, record in records.items() if record["status"] != "applied"]
-    remaining.sort()
+    remaining = sorted(index for index, record in records.items() if record["status"] == "unapplied")
+    folded = sum(record["status"] == "folded" for record in records.values())
     try:
         with _read_package(source_path) as source, _read_package(annotated_path) as reviewed:
             source_payload = _payload_digest(_tree(source.read("word/document.xml")))
@@ -440,7 +447,8 @@ def finalize_word_review(source_path, annotated_path, issues, stats, rules=None)
                 if sha256_file(source_path) != initial_hash or sha256_file(annotated_path) != reviewed_hash:
                     raise DocumentIntegrityError("Word changed during finalization")
                 return {"output_created": True, "requested": len(findings), "source_comments": applied,
-                        "context_comments": 0, "appendix_comments": 0, "comments": applied, "highlighted": applied,
+                        "context_comments": 0, "appendix_comments": 0, "comments": applied,
+                        "highlighted": applied + folded, "folded": folded,
                         "exact_comments": exact, "paragraph_comments": paragraph_count, "context_records": []}
 
             comment_snapshots = {identity: _canonical(node) for identity, node in original_comments.items()}
@@ -513,7 +521,7 @@ def finalize_word_review(source_path, annotated_path, issues, stats, rules=None)
                     raise DocumentIntegrityError("Context comments changed source document payload")
                 final_comments = _comment_map(_tree(reopened.read(comments_name)))
                 if (set(final_comments) != original_comment_ids | context_ids
-                        or len(final_comments) != old_comment_count + len(findings)
+                        or len(final_comments) != old_comment_count + len(findings) - folded
                         or any(_canonical(final_comments[identity]) != snapshot
                                for identity, snapshot in comment_snapshots.items())):
                     raise DocumentIntegrityError("Unified Word lost or changed comments")
@@ -535,7 +543,7 @@ def finalize_word_review(source_path, annotated_path, issues, stats, rules=None)
             atomic_write(annotated_path, payload, source_path=source_path)
             return {"output_created": True, "requested": len(findings), "source_comments": applied,
                     "context_comments": len(remaining), "appendix_comments": 0,
-                    "comments": len(findings), "highlighted": len(findings),
+                    "comments": len(findings) - folded, "highlighted": len(findings), "folded": folded,
                     "exact_comments": exact, "paragraph_comments": paragraph_count,
                     "context_records": context_records}
     finally:

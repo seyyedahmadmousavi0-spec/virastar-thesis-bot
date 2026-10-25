@@ -12,7 +12,7 @@ import re
 from doc_guard import atomic_write
 
 SCHEMA_VERSION = "2.0"
-PRODUCT_VERSION = "2.4.0"
+PRODUCT_VERSION = "2.5.0"
 CONFIDENCE_LABELS = {"A": "اطمینان بالا", "B": "نیازمند بازبینی", "C": "مبهم"}
 CATEGORY_LABELS = {
     "general": "بازبینی عمومی", "english_grammar": "دستور زبان انگلیسی",
@@ -37,6 +37,7 @@ ANNOTATION_REASONS = {
     "location_unavailable": "محل دقیق در دسترس نیست", "unsafe_structure": "ساختار این محل برای کامنت‌گذاری ایمن نیست",
     "uncertain_location": "محل دقیق قابل تأیید نیست", "overlapping_target": "هم‌پوشانی با کامنت دیگر",
     "duplicate": "تکراری", "comment_limit": "رسیدن به سقف کامنت‌های سند",
+    "repeated_folded": "در محل خود زرد شد؛ ایراد تکراری که در کامنت نخستین مورد مشابه شمرده شده است",
     "paragraph_limit": "رسیدن به سقف کامنت‌های پاراگراف", "annotation_failed": "تولید امن نسخهٔ بازبینی ممکن نشد",
     "dependency_unavailable": "ابزار نشانه‌گذاری PDF در دسترس نیست", "encrypted": "PDF رمزگذاری شده است",
     "repaired_pdf": "ساختار PDF نیازمند ترمیم است", "signed_pdf": "PDF امضای دیجیتال دارد",
@@ -82,7 +83,7 @@ def safe_annotation_summary(summary):
     if not isinstance(summary, dict):
         return None
     safe = {key: max(0, value) for key in ("requested", "applied", "unapplied", "max_comments",
-                                         "exact_applied", "paragraph_applied", "highlighted")
+                                         "exact_applied", "paragraph_applied", "highlighted", "folded")
             if isinstance((value := summary.get(key)), int) and not isinstance(value, bool)}
     if "max_comments" in summary and summary["max_comments"] is None:
         safe["max_comments"] = None
@@ -127,7 +128,7 @@ def safe_unified_word_review(summary):
     safe = {"output_created": summary.get("output_created") is True}
     safe.update({key: max(0, value) for key in (
         "requested", "source_comments", "context_comments", "appendix_comments", "comments", "highlighted",
-        "exact_comments", "paragraph_comments")
+        "exact_comments", "paragraph_comments", "folded")
         if isinstance((value := summary.get(key)), int) and not isinstance(value, bool)})
     if isinstance(summary.get("context_records"), list):
         safe["context_records"] = []

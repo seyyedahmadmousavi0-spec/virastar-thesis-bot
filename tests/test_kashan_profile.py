@@ -76,7 +76,10 @@ class KashanProfileTests(unittest.TestCase):
 
     def test_fragment_and_unreadable_input_do_not_report_missing_pages(self):
         _, _, issues, stats = self.review(["این بخشی از پایان‌نامه است."], scope="fragment")
-        self.assertEqual(issues, [])
+        # Page format of the file itself (margins) still applies to a fragment;
+        # claims about missing pages, numbering or page order never do.
+        self.assertEqual([], [issue for issue in issues if issue.rule_id in
+                              {"KASHAN_SECTION_REVIEW", "KASHAN_PAGE_ORDER", "KASHAN_PAGE_NUMBERS"}])
         self.assertFalse(any(row["status"] == "not_detected" for row in stats["university_checklist"]))
         stats = {"analysis_status": "failed", "is_pdf": True}
         issues = kashan_checker.check_document(None, [], stats, self.profile("phd"))
@@ -108,15 +111,16 @@ class KashanProfileTests(unittest.TestCase):
             self.assertIn(correct, issue.suggestion)
             self.assertFalse(issue.auto_applied)
             self.assertTrue(issue.validate_evidence(blocks[1].text))
-            self.assertFalse(any(row["id"] == "defense_minutes" for row in stats["university_checklist"]) if degree == "phd" else False)
+            # The official PhD template has the same page sequence, minutes included.
+            self.assertTrue(any(row["id"] == "defense_minutes" for row in stats["university_checklist"]))
 
     def test_bibliographic_thesis_word_does_not_become_cover_finding(self):
         _, _, issues, _ = self.review(["References", "Smith, J. (2020). A Thesis on control. University of Kashan.", "Kashan University", "Research was submitted in 2020."], degree="phd", scope="fragment")
         self.assertFalse(any(issue.rule_id == "KASHAN_ENGLISH_DEGREE" for issue in issues))
 
     def test_explicit_opposite_persian_degree_has_exact_source_evidence(self):
-        for degree, wrong, wanted, section in (("phd", "پایان‌نامه کارشناسی ارشد", "رساله دکتری", "۵.۲"),
-                                                ("master", "رساله دکتری", "پایان‌نامه کارشناسی ارشد", "۵.۱")):
+        for degree, wrong, wanted, section in (("phd", "پایان‌نامه کارشناسی ارشد", "رساله دکتری", "منبع C"),
+                                                ("master", "رساله دکتری", "پایان‌نامه کارشناسی ارشد", "منبع B")):
             _, blocks, issues, _ = self.review(["دانشگاه کاشان", "دانشکده مهندسی", wrong,
                                                "استاد راهنما: نمونه"], degree=degree, scope="fragment")
             matches = [issue for issue in issues if issue.rule_id == "KASHAN_PERSIAN_DEGREE"]
@@ -127,7 +131,7 @@ class KashanProfileTests(unittest.TestCase):
             self.assertEqual(issue.block_id, blocks[2].block_id)
             self.assertEqual(issue.confidence, "B")
             self.assertIn(wanted, issue.suggestion)
-            self.assertIn("بخش " + section, issue.message)
+            self.assertIn(section, issue.message)   # cites the official template
             self.assertFalse(issue.auto_applied)
 
     def test_persian_degree_needs_positive_cover_context_and_unquoted_title(self):
@@ -201,7 +205,7 @@ class KashanProfileTests(unittest.TestCase):
         for issue in reference_issues:
             self.assertEqual(issue.confidence, "B")
             self.assertTrue(issue.validate_evidence(by_id[issue.block_id].text))
-            self.assertIn("بخش ۵.۴", issue.message)
+            self.assertIn("الگوی رسمی", issue.message)
 
     def test_reference_wrapping_and_unknown_author_keep_sort_check_manual(self):
         _, _, issues, stats = self.review(["References", "Zulu, A. (2020). Study title. Publisher.", "continuation paragraph from the same source", "Alpha, B. (2021). Study title. Publisher."], scope="fragment")
@@ -220,12 +224,14 @@ class KashanProfileTests(unittest.TestCase):
         self.assertTrue(stats["university_reference_checks"]["alphabetical_checked"])
         self.assertFalse(any(issue.rule_id == "KASHAN_REFERENCE_ALPHABETICAL" for issue in issues))
 
-    def test_source_a_is_excluded_and_metadata_does_not_claim_official_verification(self):
+    def test_official_guide_applies_but_currentness_is_not_claimed(self):
+        # The owner supplied the graduate office's three-page guide (A) and the
+        # official templates (B/C); their current validity is still not claimed.
         _, _, _, stats = self.review(["نمونه"], scope="fragment")
         profile = stats["university_profile"]
-        self.assertEqual(profile["source_status"], "user_provided_summary")
-        self.assertEqual(profile["applied_sources"], ["B"])
-        self.assertEqual(profile["excluded_sources"][0]["id"], "A")
+        self.assertEqual(profile["source_status"], "owner_provided_originals")
+        self.assertEqual(profile["applied_sources"], ["A", "B"])
+        self.assertEqual(profile["excluded_sources"], [])
         self.assertIn("تأیید نشده", profile["source_label"])
         self.assertTrue(all("source" in row and row["source"] for row in stats["university_checklist"]))
 

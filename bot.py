@@ -67,6 +67,9 @@ MAX_COMMENTS = _comment_limit or None
 REPORT_TTL_MINUTES = _integer("REPORT_TTL_MINUTES", 15, 1, 60)
 REPORT_CACHE_MB = _integer("REPORT_CACHE_MB", 32, 1, 128)
 PDF_ANNOTATION_EXPERIMENTAL = os.environ.get("PDF_ANNOTATION_EXPERIMENTAL", "0") == "1"
+# Repeats of one identical mistake beyond this many are highlighted without
+# their own comment, so a long thesis still opens in Word; 0 comments all.
+FOLD_REPEATED_COMMENTS = _integer("FOLD_REPEATED_COMMENTS", 3, 0, 1000)
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 log = logging.getLogger("bot")
@@ -177,13 +180,17 @@ KASHAN_KEYBOARD = {
 }
 KASHAN_GUIDANCE = (
     "🏛 پروفایل دانشگاه کاشان\n"
-    "مبنای این پروفایل، خلاصهٔ راهنماهای ارشد و دکتری بهمن ۱۳۹۸ در مشخصات ارائه‌شدهٔ مالک ربات است؛ "
-    "اعتبار آخرین نسخه و الزامات رشته باید با تحصیلات تکمیلی تطبیق داده شود.\n"
-    "ساختار و نشانه‌های قابل استخراج، سازگاری مقطع و منابع با رویکرد APA بررسی می‌شوند؛ نسخهٔ APA حدس زده نمی‌شود. "
-    "تقدیم اختیاری است و نمونهٔ سه فصل، تعداد اجباری فصل‌ها محسوب نمی‌شود.\n"
-    "قلم ۱۲، حاشیهٔ ۳ سانتی‌متر و سایر قواعد راهنمای سه‌صفحه‌ای با دانشگاه نامشخص، الزام کاشان تلقی نمی‌شوند. "
-    "امضا، مهر، صفحه‌بندی واقعی، اعتبار علمی و الزامات روز ایرانداک به بررسی انسانی یا مدرک معتبر نیاز دارند.\n"
-    "برای یک فصل یا چکیده، گزینهٔ «بخشی از سند» یا /scope part را انتخاب کنید تا نبود صفحات یک پایان‌نامهٔ کامل ایراد محسوب نشود. "
+    "مبنا: راهنمای سه‌صفحه‌ای تحصیلات تکمیلی و الگوهای رسمی پایان‌نامهٔ ارشد و رسالهٔ دکتری (بهمن ۱۳۹۸). "
+    "اگر نسخهٔ تازه‌تری دارید، با کارشناس تحصیلات تکمیلی تطبیق دهید.\n\n"
+    "خودکار بررسی می‌شود:\n"
+    "• ترتیب صفحه‌ها: بسم‌الله، عنوان فارسی، صورت‌جلسه، تعهدنامه، تقدیم، سپاسگزاری، چکیده، فهرست‌ها، فصل‌ها، منابع، پیوست‌ها، Abstract، عنوان انگلیسی\n"
+    "• صفحهٔ عنوان: آرم، قلم یکسان و بدون نستعلیق/شکسته، «پایان‌نامه» یا «رساله» Bold، «توسط»، ماه و سال شمسی\n"
+    "• عنوان انگلیسی: بدون ایتالیک و بدون The، Thesis/Dissertation Bold، ماه و سال میلادی\n"
+    "• متن: نازنین یا لوتوس ۱۲؛ زیرنویس ۱۰؛ عنوان‌ها قلم تیتر ۱۶/۱۴/۱۲؛ حاشیهٔ ۳ سانتی‌متر از هر طرف\n"
+    "• ۴ یا ۵ کلیدواژهٔ فارسی و انگلیسی با برچسب Bold، نام‌های Bold در سپاسگزاری، «فهرست جدول‌ها/شکل‌ها»\n"
+    "• شمارهٔ صفحه: بدون شماره پیش از فهرست مطالب و با حروف ابجد از فهرست مطالب\n\n"
+    "در چک‌لیست گزارش برای بررسی دستی: چیدمان صفحهٔ عنوان، امضاها، شمارهٔ ابتدای فصل‌ها، تحویل CD و ثبت ایرانداک.\n"
+    "برای یک فصل یا چکیده، «بخشی از سند» یا /scope part را بزنید تا نبود صفحه‌های دیگر ایراد گرفته نشود؛ "
     "بازگشت به سند کامل: /scope full. فایل اصلی بازنویسی نمی‌شود."
 )
 
@@ -394,7 +401,8 @@ def process_document(chat_id, doc, annotate_requested=False, mode=None, sender_i
             review_failed = False
             if is_docx and d is not None:
                 out_docx = os.path.join(tmp, "نسخه-بازبینی-" + name)
-                checker.annotate(d, issues, out_docx, max_comments=MAX_COMMENTS, per_par=None)
+                checker.annotate(d, issues, out_docx, max_comments=MAX_COMMENTS, per_par=None,
+                                 fold_after=FOLD_REPEATED_COMMENTS)
                 stats["annotation_summary"] = getattr(d, "_last_annotation_summary", {})
                 stats["annotation_format"] = "docx"
                 if stats["annotation_summary"].get("output_created"):
@@ -434,8 +442,11 @@ def process_document(chat_id, doc, annotate_requested=False, mode=None, sender_i
                                         text_report=checker.build_report(issues, stats, rules))
             cached = _cache_reports(chat_id, sender_id, artifacts)
             if output:
-                caption = (f"نسخهٔ بازبینی سند: همهٔ {len(issues)} یافته با کامنت روی متن موجود و زردکردن محل اتصال مشخص شده‌اند. "
-                           "کامنت‌های کلی با «در سطح سند» یا «زمینه‌ای» مشخص‌اند؛ متن یا بخش تازه‌ای به سند اضافه نشده است. راهنما: /comments"
+                folded = stats.get("unified_word_review", {}).get("folded", 0)
+                caption = (f"نسخهٔ بازبینی سند: همهٔ {len(issues)} یافته روی متن موجود زرد شده‌اند"
+                           + (f" و {len(issues) - folded} کامنت دارند؛ {folded} مورد تکراری فقط زرد شده و در کامنت نخستین مورد مشابه شمرده شده‌اند. "
+                              if folded else " و کامنت دارند. ")
+                           + "متن یا بخش تازه‌ای به سند اضافه نشده است. راهنما: /comments"
                            if is_docx else "نسخهٔ بازبینی PDF؛ فقط محل‌های قابل تأیید نشانه‌گذاری شده‌اند. راهنما: /comments")
                 send_file(chat_id, output, caption)
             summary = checker.build_summary(issues, stats, rules)

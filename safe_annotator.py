@@ -141,7 +141,7 @@ def _payload(doc):
     result = [r for r in result if r[0] != qn("w:t")]
     return text, result
 
-def _comment_text(issue, scope="exact"):
+def _comment_text(issue, scope="exact", repeats=0, fold_after=0):
     """Keep qualifiers intact; never cut a long sentence into a stronger claim."""
     from rule_registry import rule_spec
     labels = {"A": "اطمینان بالا", "B": "نیازمند بررسی", "C": "مبهم؛ فقط بررسی دستی"}
@@ -154,8 +154,18 @@ def _comment_text(issue, scope="exact"):
     elif not suggestion:
         suggestion = "این مورد را با توجه به بافت متن بازبینی کنید."
     qualification = " [در سطح پاراگراف]" if scope == "paragraph" else ""
-    return (f"{issue.rule_id} | {issue.confidence} — {labels[issue.confidence]}{qualification}\n"
+    text = (f"{issue.rule_id} | {issue.confidence} — {labels[issue.confidence]}{qualification}\n"
             f"دلیل: {reason}\nپیشنهاد: {suggestion}")
+    if repeats:
+        text += (f"\nتکرار: همین ایراد {repeats} بار در سند آمده و همهٔ موارد زرد شده‌اند؛ فقط {fold_after} مورد نخست کامنت دارند. "
+                 "با Find & Replace (Ctrl+H) یک‌جا اصلاح کنید.")
+    return text
+
+
+# Word slows sharply with thousands of comment balloons; a thesis with 9000
+# findings had only 58 distinct mistakes. Repeats of one mistake stay yellow
+# where they occur, and only the first few carry their own comment.
+FOLD_REPEATED_AFTER = 3
 
 
 def _exact_target(paragraph, issue):
@@ -179,7 +189,7 @@ def _exact_target(paragraph, issue):
 
 
 def annotate_document(doc, issues, out_path, max_comments=None, per_par=None,
-                      include_ambiguous=False):
+                      include_ambiguous=False, fold_after=FOLD_REPEATED_AFTER):
     """Annotate every safe witness on a copy, selecting A then B globally.
 
     The return value retains its historical meaning (at least one new comment).
@@ -294,21 +304,40 @@ def annotate_document(doc, issues, out_path, max_comments=None, per_par=None,
             continue
         grouped[key].append((issue, index, left, right, scope))
         selected += 1
+    # Identical exact mistakes (same rule, same text) beyond the first few are
+    # highlighted only; the first comment states how often the mistake occurs.
+    folded, totals = {}, {}
+    if fold_after:
+        repeats = defaultdict(list)
+        for items in grouped.values():
+            for issue, index, _, _, scope in items:
+                if scope == "exact" and issue.target_text:
+                    repeats[(issue.rule_id, issue.target_text)].append(index)
+        for indexes in repeats.values():
+            if len(indexes) > fold_after:
+                indexes.sort()
+                totals[indexes[0]] = len(indexes)
+                folded.update((index, indexes[0]) for index in indexes[fold_after:])
     count = 0
     for key, items in grouped.items():
         paragraph = paragraphs[key]
+        # Every selected witness, folded or not, is split out and highlighted.
         anchors = _split_runs_once(paragraph, [(left, right) for _, _, left, right, _ in items])
         for runs, (issue, index, left, right, scope) in zip(anchors, items):
-            working.add_comment(runs, text=_comment_text(issue, scope),
+            if index in folded:
+                records[index].update(status="folded", reason="repeated_folded",
+                                      anchor_scope=scope, folded_into=folded[index])
+                continue
+            working.add_comment(runs, text=_comment_text(issue, scope, totals.get(index, 0), fold_after),
                                 author="Research Editor", initials="RE")
             records[index].update(status="applied", reason="annotated", anchor_scope=scope)
             count += 1
-    summary.update(applied=count, unapplied=len(issues) - count,
+    summary.update(applied=count, folded=len(folded), unapplied=len(issues) - count - len(folded),
                    exact_applied=sum(r["status"] == "applied" and r["anchor_scope"] == "exact" for r in records),
                    paragraph_applied=sum(r["status"] == "applied" and r["anchor_scope"] == "paragraph" for r in records),
-                   highlighted=count,
+                   highlighted=count + len(folded),
                    reasons=dict(Counter(record["reason"] for record in records
-                                        if record["status"] != "applied")))
+                                        if record["status"] not in {"applied", "folded"})))
     if _payload(working) != before:
         raise DocumentIntegrityError("Annotation changed document payload")
     buffer = io.BytesIO()
@@ -321,7 +350,9 @@ def annotate_document(doc, issues, out_path, max_comments=None, per_par=None,
         with open(source, "rb") as original_stream:
             export.write(original_stream.read())
     elif source:
-        with zipfile.ZipFile(source) as original, zipfile.ZipFile(export, "w") as output:
+        # Deflate new parts too: an uncompressed comments part of thousands of
+        # comments made reviewed files a hundred times larger than the source.
+        with zipfile.ZipFile(source) as original, zipfile.ZipFile(export, "w", zipfile.ZIP_DEFLATED) as output:
             names = set(original.namelist())
             replace = {"word/document.xml", "word/_rels/document.xml.rels", "[Content_Types].xml"}
             # Existing valid packages may use a custom comments part name.
@@ -347,7 +378,7 @@ def annotate_document(doc, issues, out_path, max_comments=None, per_par=None,
                 output.writestr(item, data)
             for name in generated.namelist():
                 if name not in names:
-                    output.writestr(name, generated.read(name))
+                    output.writestr(name, generated.read(name), compress_type=zipfile.ZIP_DEFLATED)
     else:
         export.write(buffer.getvalue())
     generated.close()

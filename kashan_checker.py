@@ -1,8 +1,10 @@
-"""Read-only, source-labelled Kashan review; never imports unidentified source A.
+"""Read-only, source-labelled University of Kashan review.
 
-The available authority is the user's summary, not the original university PDFs.
-All document findings require human review (at most B). Textual presence is not
-proof of page layout, signatures, official approval, originality or readiness.
+Authority: the graduate office's three-page writing guide (source A) and the
+official master's (B) and PhD (C) templates of Bahman 1398, supplied by the
+bot owner. Word-format clauses live in kashan_format. All document findings
+require human review (at most B). Textual presence is not proof of page
+layout, signatures, official approval, originality or readiness.
 """
 import copy
 import json
@@ -18,8 +20,9 @@ MODES = {"kashan": "unknown", "kashan_master": "master", "kashan_phd": "phd"}
 _DEGREES = {"unknown": "مقطع تعیین نشده", "master": "کارشناسی ارشد", "phd": "دکتری"}
 _DIGITS = str.maketrans("۰۱۲۳۴۵۶۷۸۹٠١٢٣٤٥٦٧٨٩", "01234567890123456789")
 _TRANSLATE = str.maketrans({"ي": "ی", "ك": "ک", "\u200c": " "})
-SOURCE_LABEL = "خلاصهٔ راهنماهای ارسالی کاربر؛ اعتبار رسمی و به‌روزبودن مستقلاً تأیید نشده است"
-SOURCE_A_REASON = "تعلق راهنمای A به دانشگاه کاشان تأیید نشده؛ قواعد صفحه‌آرایی، تحویل CD و ایرانداک آن اعمال نشد."
+SOURCE_LABEL = ("راهنمای سه‌صفحه‌ای و الگوهای رسمی ارشد و دکتری تحصیلات تکمیلی دانشگاه کاشان (بهمن ۱۳۹۸)، "
+                "ارسالی مالک ربات؛ به‌روزبودن آن‌ها مستقلاً تأیید نشده و باید با تحصیلات تکمیلی تطبیق داده شود")
+GUIDE_A = "راهنمای سه‌صفحه‌ای تحصیلات تکمیلی دانشگاه کاشان، {}"
 
 
 # Ezafe and vowel marks or tatweel do not change which heading is meant:
@@ -35,13 +38,12 @@ def _norm(text):
 
 
 def _source(degree, section):
+    """Cite the official template; ``section`` is kept for call compatibility."""
     if degree == "master":
-        name = "راهنمای تهیه و تدوین پایان‌نامه کارشناسی ارشد دانشگاه کاشان، بهمن ۱۳۹۸ (منبع B)"
-    elif degree == "phd":
-        name = "راهنمای تهیه و تدوین رساله دکتری دانشگاه کاشان، بهمن ۱۳۹۸ (منبع C)"
-    else:
-        name = "راهنماهای دانشگاه کاشان (منابع B و C)"
-    return f"خلاصهٔ ارسالی کاربر از {name}؛ بخش {section} متن ارسالی"
+        return "الگوی رسمی راهنمای تهیه و تدوین پایان‌نامه کارشناسی ارشد دانشگاه کاشان، بهمن ۱۳۹۸ (منبع B)"
+    if degree == "phd":
+        return "الگوی رسمی راهنمای تهیه و تدوین رساله دکتری دانشگاه کاشان، بهمن ۱۳۹۸ (منبع C)"
+    return "الگوهای رسمی ارشد و دکتری دانشگاه کاشان، بهمن ۱۳۹۸ (منابع B و C)"
 
 
 def _profile_metadata():
@@ -138,7 +140,7 @@ def _heading(record):
 _MASTER = [
     ("basmala", "صفحهٔ بسم‌الله", ("بسم الله الرحمن الرحیم", "بسم الله"), "required"),
     ("persian_cover", "صفحهٔ عنوان فارسی", (), "required"),
-    ("defense_minutes", "صورت‌جلسهٔ دفاع", ("صورت جلسه دفاع", "صورتجلسه دفاع", "صورت جلسه", "صورتجلسه"), "required"),
+    ("defense_minutes", "صورت‌جلسهٔ دفاع", ("صورت جلسه دفاع*", "صورتجلسه دفاع*", "صورت جلسه", "صورتجلسه"), "required"),
     ("declaration", "تعهدنامه", ("تعهدنامه", "تعهد نامه", "تعهد اصالت اثر", "تعهدنامه اصالت اثر"), "required"),
     ("dedication", "تقدیم", ("تقدیم", "تقدیم به"), "optional"),
     ("acknowledgements", "سپاسگزاری", ("سپاسگزاری", "سپاس گزاری", "تقدیر و تشکر", "تشکر و قدردانی", "سپاس و قدردانی"), "required"),
@@ -172,6 +174,20 @@ def _english_cover(records):
         if any(re.search(r"\b(?:submitted\s+(?:in|for|to)|supervisors?|faculty\s+of|degree\s+of|a\s+thesis|ph\.?\s*d\.?)\b", r["text"], re.I)
                for r in context):
             return record, context
+    # Official template: «Faculty of …», then degree, supervisor and «By:».
+    for record in records:
+        if not (_heading(record) and re.match(r"\s*faculty\s+of\b", record["text"], re.I)):
+            continue
+        window = []
+        for item in records[record["index"]:record["index"] + 18]:
+            if window and _heading(item) and re.fullmatch(r"\s*(?:abstract|references|bibliography)\s*:?\s*", item["text"], re.I):
+                break
+            if item["story"] == record["story"] and not _is_toc(item):
+                window.append(item)
+        joined = " ".join(item["text"] for item in window)
+        if (re.search(r"\b(?:thesis|dissertation)\b", joined, re.I)
+                and re.search(r"\b(?:supervisors?|by)\s*(?:\(s\))?\s*:", joined, re.I)):
+            return record, window
     return None, []
 
 
@@ -181,12 +197,48 @@ def _persian_cover(records):
             nearby = records[max(0, record["index"] - 3):record["index"] + 10]
             if any(re.search(r"(?:پایان[\s\u200c-]*نامه|رساله|استاد راهنما|دانشکده)", r["text"]) for r in nearby if not _is_toc(r)):
                 return record
+    # The official template prints «دانشگاه کاشان» inside the logo image, so
+    # the page is also recognised by its own lines: faculty, degree,
+    # supervisor and «توسط».
+    for record in records[:60]:
+        if not (_heading(record) and _norm(record["text"]).startswith("دانشکده")):
+            continue
+        nearby = " ".join(_norm(r["text"]) for r in records[record["index"]:record["index"] + 16] if not _is_toc(r))
+        if (re.search(r"پایان ?نامه|رساله", nearby) and re.search(r"استاد(?:\(ان\)|ان)? ?راهنما", nearby)
+                and re.search(r"توسط|به ?وسیله|نگارش", nearby)):
+            return record
     return None
 
 
+_STOP_HEADINGS = ("صورتجلسه دفاع*", "صورت جلسه دفاع*", "تعهدنامه", "تعهد نامه", "تقدیم", "سپاسگزاری",
+                  "سپاس گزاری", "چکیده", "فهرست مطالب", "abstract", "فصل اول")
+
+
+def persian_cover_window(records):
+    """Records of the Persian title page, ending at the next page heading."""
+    start = _persian_cover(records)
+    if start is None:
+        return []
+    window = []
+    for record in records[start["index"]:start["index"] + 20]:
+        if window and _find_heading([record], _STOP_HEADINGS):
+            break
+        window.append(record)
+    return window
+
+
 def _find_heading(records, patterns):
-    candidates = {_norm(pattern) for pattern in patterns}
-    return next((record for record in records if _heading(record) and _norm(record["text"]) in candidates), None)
+    """Patterns ending in «*» match a heading prefix: the official minutes page
+    is titled «صورتجلسه دفاع از پایان‌نامه کارشناسی ارشد»."""
+    exact = {_norm(pattern) for pattern in patterns if not pattern.endswith("*")}
+    prefixes = tuple(_norm(pattern[:-1]) for pattern in patterns if pattern.endswith("*"))
+    for record in records:
+        if not _heading(record):
+            continue
+        text = _norm(record["text"])
+        if text in exact or (prefixes and text.startswith(prefixes)):
+            return record
+    return None
 
 
 def _make_issue(rule_id, message, source, record=None, span=None, suggestion=""):
@@ -211,13 +263,22 @@ def _make_issue(rule_id, message, source, record=None, span=None, suggestion="")
     return issue
 
 
-def _checklist(records, degree, scope, issues):
+def _leading_image(doc, records):
+    """The official basmala page is calligraphy: an image before any text."""
+    if doc is None or not records or records[0]["par_index"] < 0:
+        return None
+    for index, paragraph in enumerate(doc.paragraphs[:records[0]["par_index"]]):
+        if paragraph._p.xpath(".//w:drawing|.//w:pict"):
+            return {"text": "[تصویر آغاز سند]", "location": f"پاراگراف {index + 1}", "par_index": index}
+    return None
+
+
+def _checklist(records, degree, scope, issues, doc=None):
     english_cover, cover_context = _english_cover(records)
     persian_cover = _persian_cover(records)
-    if degree == "master":
+    if degree in {"master", "phd"}:
+        # The official PhD template (Bahman 1398) has the master's sequence.
         definitions = _MASTER
-    elif degree == "phd":
-        definitions = [_MASTER[1], _MASTER[-1], _MASTER[12]]
     else:
         definitions = [_MASTER[6], _MASTER[12], _MASTER[14]]
     rows = []
@@ -227,6 +288,8 @@ def _checklist(records, degree, scope, issues):
             found = english_cover
         elif item_id == "persian_cover":
             found = persian_cover
+        elif item_id == "basmala":
+            found = _find_heading(records, patterns) or _leading_image(doc, records)
         elif item_id == "chapters":
             found = next((r for r in records if _heading(r) and _CHAPTER.fullmatch(_norm(r["text"]))), None)
         else:
@@ -236,6 +299,7 @@ def _checklist(records, degree, scope, issues):
                "status": "manual", "detail": "با دادهٔ موجود قابل تأیید نیست؛ بازبینی انسانی لازم است."}
         if found:
             row.update(status="detected", evidence=found["text"][:160], location=found["location"],
+                       par_index=found.get("par_index", -1),
                        detail="نشانهٔ متنی یافت شد؛ ترتیب صفحات، کامل‌بودن محتوا و صفحه‌آرایی تأیید نشده است.")
         elif requirement == "optional":
             row.update(status="optional", detail="نبودن این بخش به‌تنهایی مغایرت نیست؛ تقدیم اختیاری و پیوست وابسته به وجود محتوای مربوط است.")
@@ -248,20 +312,49 @@ def _checklist(records, degree, scope, issues):
             issues.append(_make_issue("KASHAN_SECTION_REVIEW", f"نشانهٔ مستقل بخش «{label}» در متن استخراج‌شده تشخیص داده نشد؛ وجود آن و شمول الگو را بررسی کنید.", source,
                                       suggestion="وجود این بخش را در فایل اصلی و الگوی معتبر مقطع بررسی کنید؛ بخش جدید خودکار ساخته نمی‌شود."))
         rows.append(row)
+    # Clauses that a Word file cannot prove are listed for the student to check.
     manual = [
-        ("layout", "قلم، حاشیه، فاصله خطوط و شماره‌گذاری واقعی", "منبع A شناسایی نشده و B/C در خلاصهٔ موجود مقادیر قطعی صفحه‌آرایی ندارند؛ هیچ مقدار عمومی به نام قانون کاشان اعمال نشده است.", "۲ و ۵"),
-        ("chapter_count", "تعداد و ترتیب فصل‌ها", "نمونهٔ سه‌فصلی الزام تعداد ثابت نیست؛ تأیید ساختار مصوب رشته و ترتیب واقعی با نویسنده است.", "۵.۲ و ۵.۳"),
-        ("toc_pages", "تطبیق فهرست‌ها با عنوان‌ها و شمارهٔ صفحات", "تشخیص عنوان از متن، تطبیق صفحه‌بندی Word/PDF و به‌روزبودن فهرست را ثابت نمی‌کند.", "۵.۳"),
-        ("references_integrity", "تطبیق ارجاعات و کامل‌بودن منابع", "فقط الگوهای روشن محلی بررسی می‌شوند؛ ویرایش APA تعیین نشده و هیچ نویسنده، سال، DOI یا اطلاعات منبعی از روی حدس تکمیل نمی‌شود.", "۵.۴"),
-        ("authenticity", "اصالت پژوهش، صحت داده‌ها و امضاها", "از خواندن فایل نمی‌توان اصالت، نبود سرقت علمی، صحت داده‌ها یا امضاهای معتبر را تضمین کرد.", "۵.۵"),
+        ("cover_layout", "جای آرم، وسط صفحه بودن عنوان و درج عمودی نام استادان راهنما و مشاور",
+         "قلم، Bold، تاریخ و «توسط» خودکار بررسی می‌شوند؛ چیدمان دیداری صفحهٔ عنوان را در Word یا PDF نگاه کنید.", GUIDE_A.format("بندهای ۲ تا ۵")),
+        ("chapter_page_numbers", "شمارهٔ صفحهٔ ابتدای فصل‌ها",
+         "در ابتدای هر فصل شمارهٔ صفحه تایپ نشود ولی شمرده شود (Different First Page). صفحه‌های Abstract و عنوان انگلیسی نیز شماره ندارند.",
+         GUIDE_A.format("بند ۱۸ و تذکر صفحهٔ ۲")),
+        ("lines_per_page", "۲۴ تا ۲۶ سطر در هر صفحه",
+         "با فاصلهٔ خطوط Exactly یا At least خودکار سنجیده می‌شود؛ با Multiple یا Single تعداد سطر یک صفحهٔ کامل را در Word بشمارید.", GUIDE_A.format("بند ۲۹")),
+        ("dedication_note", "صفحهٔ تقدیم",
+         "راهنمای سه‌صفحه‌ای ایجاد آن را می‌خواهد ولی الگوهای رسمی آن را «اختیاری» نوشته‌اند؛ نبودنش ایراد گرفته نمی‌شود. با گروه آموزشی تطبیق دهید.",
+         GUIDE_A.format("بند ۱۰ و الگوهای رسمی")),
+        ("reference_style_note", "شیوهٔ فهرست منابع",
+         "الگوهای رسمی منابع را به ترتیب الفبا و به روش APA می‌خواهند؛ راهنمای سه‌صفحه‌ای شماره‌گذاری در کروشه را آورده است. اگر منابع شماره دارند، کروشه و رقم فارسی/انگلیسی خودکار بررسی می‌شود.",
+         GUIDE_A.format("بند ۱۹ و الگوهای رسمی")),
+        ("signatures", "صورت‌جلسهٔ دفاع و تعهدنامهٔ امضاشده",
+         "صورت‌جلسه پس از عنوان فارسی و تعهدنامهٔ امضاشده (بدون تاریخ و شماره) پس از آن؛ امضا و اعتبار فرم از روی فایل قابل تأیید نیست.",
+         GUIDE_A.format("بندهای ۸ و ۹")),
+        ("chapter_count", "تعداد و ترتیب فصل‌ها", "نمونهٔ سه‌فصلی الزام تعداد ثابت نیست؛ تأیید ساختار مصوب رشته و ترتیب واقعی با نویسنده است.",
+         _source(degree, "۵.۲ و ۵.۳")),
+        ("toc_pages", "تطبیق فهرست‌ها با عنوان‌ها و شمارهٔ صفحات", "تشخیص عنوان از متن، تطبیق صفحه‌بندی Word/PDF و به‌روزبودن فهرست را ثابت نمی‌کند.",
+         _source(degree, "۵.۳")),
+        ("references_integrity", "تطبیق ارجاعات و کامل‌بودن منابع", "فقط الگوهای روشن محلی بررسی می‌شوند؛ هیچ نویسنده، سال، DOI یا اطلاعات منبعی از روی حدس تکمیل نمی‌شود.",
+         _source(degree, "۵.۴")),
+        ("authenticity", "اصالت پژوهش، صحت داده‌ها و امضاها", "از خواندن فایل نمی‌توان اصالت، نبود سرقت علمی، صحت داده‌ها یا امضاهای معتبر را تضمین کرد.",
+         _source(degree, "۵.۵")),
+        ("before_cd", "پیش از تهیهٔ CD و ثبت در ایرانداک",
+         "از کارشناس تحصیلات تکمیلی نامهٔ انجام نظرات اصلاحی داوران، صورت‌جلسهٔ دفاع و فرم تعهدنامه را دریافت کنید.", GUIDE_A.format("مقدمه")),
+        ("cd", "تحویل CD",
+         "دو CD قاب‌دار (برای دو استاد راهنما سه CD): یکی کتابخانهٔ دانشکده، یکی استاد راهنما. عنوان فارسی روی جلد و انگلیسی پشت جلد. "
+         "داخل CD: فایل Word و PDF یکپارچه از بسم‌الله تا عنوان انگلیسی، اسکن JPG صورت‌جلسه و اسکن تعهدنامهٔ امضاشده.", GUIDE_A.format("نکات تهیهٔ CD")),
+        ("irandoc", "ثبت در ایرانداک",
+         "ثبت و بارگذاری Word و PDF پروپوزال و پایان‌نامه در sabt.irandoc.ac.ir بدون پرداخت هزینه و دریافت کد رهگیری ۷ رقمی "
+         "(پروپوزال با ۱ و پایان‌نامه با ۲ آغاز می‌شود). تسویه‌حساب منوط به تأیید این کدهاست.", GUIDE_A.format("نکات ثبت در ایرانداک")),
     ]
     if degree == "phd":
-        manual.append(("phd_defense_panel", "فرم دفاع دکتری و داور خارج دانشگاه", "وجود داور خارج دانشگاه در نمونهٔ دکتری مطرح است؛ نقش، هویت و امضاها باید با فرم معتبر دکتری تطبیق داده شود.", "۵.۲"))
+        manual.append(("phd_defense_panel", "فرم دفاع دکتری و داور خارج دانشگاه", "الگوی رسمی دکتری داور خارج دانشگاه دارد؛ نقش، هویت و امضاها باید با فرم معتبر تطبیق داده شود.",
+                       _source(degree, "۵.۲")))
     if degree == "unknown":
-        manual.insert(0, ("degree", "انتخاب مقطع تحصیلی", "ابتدا کارشناسی ارشد یا دکتری را انتخاب کنید؛ الگو و عنوان مقطع حدس زده نشده است.", "۳ و ۵"))
-    for item_id, label, detail, section in manual:
-        rows.append({"id": item_id, "label": label, "status": "manual", "detail": detail,
-                     "source": _source(degree, section)})
+        manual.insert(0, ("degree", "انتخاب مقطع تحصیلی", "ابتدا کارشناسی ارشد یا دکتری را انتخاب کنید؛ الگو و عنوان مقطع حدس زده نشده است.",
+                          _source(degree, "۳ و ۵")))
+    for item_id, label, detail, source in manual:
+        rows.append({"id": item_id, "label": label, "status": "manual", "detail": detail, "source": source})
     return rows, cover_context
 
 
@@ -411,12 +504,14 @@ def check_document(doc, blocks, stats, rules):
     metadata = rules.get("kashan_profile") or _profile_metadata()
     stats["university_profile"] = {
         "id": "kashan", "title": "دانشگاه کاشان", "degree": degree,
-        "degree_label": _DEGREES[degree], "source_status": "user_provided_summary",
-        "source_label": SOURCE_LABEL, "applied_sources": ["B"] if degree == "master" else ["C"] if degree == "phd" else ["B", "C"],
-        "excluded_sources": [{"id": "A", "reason": SOURCE_A_REASON}],
+        "degree_label": _DEGREES[degree], "source_status": "owner_provided_originals",
+        "source_label": SOURCE_LABEL,
+        "applied_sources": ["A", "B"] if degree == "master" else ["A", "C"] if degree == "phd" else ["A", "B", "C"],
+        "excluded_sources": [],
         "sources": copy.deepcopy(metadata.get("sources", [])),
         "reference_style": "APA؛ ویرایش تعیین نشده", "document_scope": scope,
-        "limitations": [SOURCE_LABEL, SOURCE_A_REASON,
+        "limitations": [SOURCE_LABEL,
+                        "چیدمان دیداری صفحه‌ها، امضاها، CD و ایرانداک از روی فایل قابل تأیید نیستند و در چک‌لیست برای بررسی دستی آمده‌اند.",
                         "نشانه‌های متنی، تأیید صفحه‌آرایی، امضا، ترتیب صفحات، اصالت پژوهش یا آمادگی نهایی نیستند.",
                         "پیشنهادها خودکار اعمال نمی‌شوند؛ سند اصلی و داده‌های علمی تغییر نمی‌کنند."],
     }
@@ -426,10 +521,13 @@ def check_document(doc, blocks, stats, rules):
     # entire required page. Only native Word full-document review emits those
     # bounded, explicitly qualified missing-heading suggestions.
     checklist_scope = scope if doc is not None and not stats.get("is_pdf") else "fragment"
-    checklist, cover_context = _checklist(records, degree, checklist_scope, issues)
+    checklist, cover_context = _checklist(records, degree, checklist_scope, issues, doc)
     stats["university_checklist"] = checklist
     _check_cover(degree, cover_context, issues)
     _check_persian_cover(degree, records, issues)
+    if not stats.get("is_pdf"):
+        import kashan_format
+        kashan_format.check_format(doc, records, degree, checklist_scope, checklist, cover_context, issues)
     stats["university_reference_checks"] = _references(records, degree, issues)
     by_id = {record["block_id"]: record for record in records if record["block_id"]}
     for issue in issues:

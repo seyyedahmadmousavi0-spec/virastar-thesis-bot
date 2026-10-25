@@ -14,7 +14,7 @@ class ReleasePackageTests(unittest.TestCase):
         self.temporary = tempfile.TemporaryDirectory()
         self.addCleanup(self.temporary.cleanup)
         self.root = Path(self.temporary.name)
-        names = [*ROOT_FILES, "tests/benchmark_cases.json", "docs/PROFESSIONAL_UPGRADE.md",
+        names = [*ROOT_FILES, "tests/benchmark_cases.json", "tests/kashan_template.py", "docs/PROFESSIONAL_UPGRADE.md",
                  "docs/STUDENT_EXPERIENCE.md",
                  "docs/KASHAN_PROFILE.md",
                  "docs/DEPLOYMENT.md",

@@ -464,7 +464,8 @@ SCIENTIFIC_HEAD_RE = re.compile(
     r"(?:(?:p|r|t|f|z)\s*[<>=~]|doi:|url:|https?://|www\.|n\s*=|ci\s*|ph\s*|covid-?)\s*$",
     re.IGNORECASE
 )
-ABBR_EXEMPT_RE = re.compile(r"(?:هـ\.[شق]|ه\.[شق])")
+# Single-letter abbreviations: «ه.ش»، «ق.م.»، «ر.ک.».
+ABBR_EXEMPT_RE = re.compile(r"(?<![" + FA + r"])[" + FA + r"]ـ?\.[" + FA + r"](?![" + FA + r"])")
 
 REDUPLICATION_WORDS = {
     "کم", "ذره", "پله", "تک", "رفته", "قطره", "دسته", "بخش", "صفحه",
@@ -1831,6 +1832,8 @@ def build_summary(issues, stats, rules):
     if unified:
         if unified["output_created"]:
             lines.append(f"همهٔ {unified.get('requested', len(issues))} یافته در همین Word: {unified.get('comments', 0)} کامنت و هایلایت زرد.")
+            if unified.get("folded"):
+                lines.append(f"{unified['folded']} ایراد تکراری فقط زرد شده‌اند؛ تعداد تکرار در کامنت نخستین مورد مشابه آمده تا Word سبک بماند.")
             lines.append(f"محل قابل‌تأیید: {unified.get('source_comments', 0)} مورد · ارجاع کلی/زمینه‌ای: {unified.get('context_comments', 0)} مورد؛ همه روی متن موجود سند هستند.")
         else:
             lines.append("ساخت Word شامل همهٔ یافته‌ها تکمیل نشد؛ همهٔ یافته‌ها در HTML و TXT ارسالی هستند.")
@@ -1876,12 +1879,15 @@ def split_message(text, limit=3800):
     return parts
 
 
-def annotate(doc, issues, out_path, max_comments=None, per_par=None):
+def annotate(doc, issues, out_path, max_comments=None, per_par=None,
+             fold_after=safe_annotator.FOLD_REPEATED_AFTER):
     """
     ذخیره‌ی نسخه‌ی کامنت‌گذاری‌شده‌ی فایل کاربر در Word با موتور ایمن safe_annotator.
     قاعده اساسی: به هیچ عنوان به متن اصلی دست زده نمی‌شود (حفظ ۱۰۰٪ نویسه‌ها و استایل‌ها).
+    fold_after=0 یعنی هر یافته کامنت جداگانه بگیرد، حتی ایرادهای تکراری.
     """
-    return safe_annotator.annotate_document(doc, issues, out_path, max_comments=max_comments, per_par=per_par)
+    return safe_annotator.annotate_document(doc, issues, out_path, max_comments=max_comments,
+                                            per_par=per_par, fold_after=fold_after)
 
 
 if __name__ == "__main__":

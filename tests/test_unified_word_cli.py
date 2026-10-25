@@ -65,7 +65,9 @@ class UnifiedWordCliTests(unittest.TestCase):
         output, errors = io.StringIO(), io.StringIO()
         with contextlib.redirect_stdout(output), contextlib.redirect_stderr(errors):
             result = review_cli.main(
-                [str(self.source), "--annotate", str(reviewed), "--format", "json", *extra],
+                # These tests verify one comment per finding; folding has its own tests.
+                [str(self.source), "--annotate", str(reviewed), "--format", "json",
+                 "--comment-every-finding", *extra],
                 engine=self.engine,
             )
         self.assertEqual(0, result, errors.getvalue())

@@ -39,7 +39,7 @@ class WordReviewCliTests(unittest.TestCase):
         artifacts = self.root / "reports"
         result, output, errors = self.run_cli([
             "--annotate", reviewed, "--word-report", complete,
-            "--output-dir", artifacts, "--format", "json",
+            "--output-dir", artifacts, "--format", "json", "--comment-every-finding",
         ])
         self.assertEqual(0, result, errors)
         report = json.loads(output)
@@ -91,7 +91,7 @@ class WordReviewCliTests(unittest.TestCase):
         complete = self.root / "all-findings.docx"
         result, output, errors = self.run_cli([
             "--annotate", reviewed, "--word-report", complete,
-            "--max-comments", "25", "--format", "json",
+            "--max-comments", "25", "--format", "json", "--comment-every-finding",
         ])
         self.assertEqual(0, result, errors)
         report = json.loads(output)

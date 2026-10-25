@@ -25,6 +25,8 @@ def main(argv=None, *, engine=None):
     parser.add_argument("--annotate-pdf", help="آزمایشی: مسیر کپی PDF با یادداشت در محل‌های قابل تطبیق")
     parser.add_argument("--max-comments", type=int, default=None,
                         help="سقف اختیاری کامنت دقیق/پاراگرافی (۰ تا ۱۰۰۰۰)؛ باقی موارد با ارجاع صریح در متن موجود همان Word کامنت می‌گیرند")
+    parser.add_argument("--comment-every-finding", action="store_true",
+                        help="ایرادهای تکراری هم هر کدام کامنت جدا بگیرند؛ پیش‌فرض: از تکرار چهارم فقط زرد می‌شوند تا Word سبک بماند")
     parser.add_argument("--include-ambiguous", action="store_true")
     parser.add_argument("--fail-on", choices=("A", "B", "C"), help="بازگرداندن کد ۱ در صورت یافتن این سطح")
     parser.add_argument("--list-rules", action="store_true")
@@ -78,7 +80,8 @@ def main(argv=None, *, engine=None):
         if args.annotate and doc is None:
             raise ValueError("Annotation is available only for Word documents")
         if args.annotate:
-            engine.annotate(doc, issues, args.annotate, max_comments=args.max_comments, per_par=None)
+            fold = {"fold_after": 0} if args.comment_every_finding else {}
+            engine.annotate(doc, issues, args.annotate, max_comments=args.max_comments, per_par=None, **fold)
             stats["annotation_summary"] = getattr(doc, "_last_annotation_summary", {})
             stats["annotation_format"] = "docx"
             from unified_word_review import finalize_word_review
